@@ -1,6 +1,6 @@
 services:
   cinepyle:
-    image: ghcr.io/stephen-kim/cinepyle:latest
+    build: .
     env_file:
       - .env
     restart: unless-stopped
