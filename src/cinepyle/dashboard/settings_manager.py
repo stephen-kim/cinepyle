@@ -137,6 +137,32 @@ class SettingsManager:
                 pass
         return ["anthropic", "openai", "gemini"]
 
+    def get_imax_monitor_theaters(self) -> list[dict]:
+        """Return the list of IMAX monitor theater configs.
+
+        Each dict has keys: code, region, name.
+        """
+        raw = self.get("imax_monitor_theaters", "")
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+        return []
+
+    def get_preferred_theaters(self) -> list[dict]:
+        """Return the list of preferred theaters for booking.
+
+        Each dict has keys: chain_key, theater_code, region_code, name.
+        """
+        raw = self.get("preferred_theaters", "")
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+        return []
+
     async def close(self) -> None:
         await self.store.close()
         SettingsManager._instance = None

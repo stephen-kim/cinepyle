@@ -7,11 +7,13 @@ in-place updates without full page reloads.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time as _time
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -35,10 +37,90 @@ def _get_mgr():
     return SettingsManager.get_instance()
 
 
-def _get_theaters() -> list[dict]:
-    """Load CGV theater data sorted by name."""
-    from cinepyle.theaters.data_cgv import data
-    return sorted(data, key=lambda t: t["TheaterName"])
+def _get_imax_theaters() -> list[dict]:
+    """Load CGV IMAX theaters sorted by name."""
+    from cinepyle.theaters.data_cgv import get_imax_theaters
+    return sorted(get_imax_theaters(), key=lambda t: t["TheaterName"])
+
+
+# ------------------------------------------------------------------
+# All-chain theater cache (for preferred theater search)
+# ------------------------------------------------------------------
+
+_theater_cache: list[dict] = []
+_theater_cache_ts: float = 0.0
+_THEATER_CACHE_TTL = 3600  # 1 hour
+
+_CHAIN_DISPLAY = {
+    "cgv": "CGV",
+    "lotte": "롯데시네마",
+    "megabox": "메가박스",
+    "cineq": "씨네Q",
+}
+
+
+def _build_theater_cache() -> list[dict]:
+    """Build merged theater list across all chains (blocking I/O for Lotte/Megabox)."""
+    global _theater_cache, _theater_cache_ts
+
+    now = _time.time()
+    if _theater_cache and (now - _theater_cache_ts) < _THEATER_CACHE_TTL:
+        return _theater_cache
+
+    all_theaters: list[dict] = []
+
+    # CGV (static)
+    from cinepyle.theaters.data_cgv import data as cgv_data
+    for t in cgv_data:
+        all_theaters.append({
+            "chain_key": "cgv",
+            "theater_code": t["TheaterCode"],
+            "region_code": t.get("RegionCode", ""),
+            "name": t["TheaterName"],
+        })
+
+    # CineQ (static)
+    try:
+        from cinepyle.theaters.data_cineq import data as cineq_data
+        for t in cineq_data:
+            all_theaters.append({
+                "chain_key": "cineq",
+                "theater_code": t["TheaterCode"],
+                "region_code": "",
+                "name": t["TheaterName"],
+            })
+    except Exception:
+        logger.exception("Failed to load CineQ theaters")
+
+    # Lotte (API)
+    try:
+        from cinepyle.theaters import lotte
+        for t in lotte.get_theater_list():
+            all_theaters.append({
+                "chain_key": "lotte",
+                "theater_code": str(t.get("TheaterID", "")),
+                "region_code": "",
+                "name": t["TheaterName"],
+            })
+    except Exception:
+        logger.exception("Failed to fetch Lotte theaters")
+
+    # Megabox (API)
+    try:
+        from cinepyle.theaters import megabox
+        for t in megabox.get_theater_list():
+            all_theaters.append({
+                "chain_key": "megabox",
+                "theater_code": str(t.get("TheaterID", t.get("brchNo", ""))),
+                "region_code": "",
+                "name": t["TheaterName"],
+            })
+    except Exception:
+        logger.exception("Failed to fetch Megabox theaters")
+
+    _theater_cache = all_theaters
+    _theater_cache_ts = now
+    return all_theaters
 
 
 def _cred_exists(mgr, key: str) -> bool:
@@ -96,9 +178,25 @@ async def settings_page(request: Request):
     imax_interval = mgr.get("imax_check_interval", "600")
     new_movie_interval = mgr.get("new_movie_check_interval", "3600")
 
-    # Theater
-    current_theater_code = mgr.get("preferred_theater_code", "0013")
-    theaters = _get_theaters()
+    # IMAX theaters (checkbox list)
+    imax_theaters = _get_imax_theaters()
+    imax_selected_codes = {t["code"] for t in mgr.get_imax_monitor_theaters()}
+
+    # Migration: old single theater → new lists (one-time)
+    if not mgr.get("imax_monitor_theaters") and mgr.get("preferred_theater_code"):
+        from cinepyle.theaters.data_cgv import IMAX_THEATER_CODES
+        old_code = mgr.get("preferred_theater_code")
+        old_region = mgr.get("preferred_theater_region", "")
+        old_name = mgr.get("preferred_theater_name", "")
+        if old_code and old_code in IMAX_THEATER_CODES:
+            await mgr.set("imax_monitor_theaters", json.dumps(
+                [{"code": old_code, "region": old_region, "name": old_name}],
+                ensure_ascii=False,
+            ))
+            imax_selected_codes = {old_code}
+
+    # Preferred theaters
+    preferred_theaters = mgr.get_preferred_theaters()
 
     # LLM priority
     llm_priority = mgr.get_llm_priority()
@@ -116,8 +214,9 @@ async def settings_page(request: Request):
         context={
             "imax_interval": imax_interval,
             "new_movie_interval": new_movie_interval,
-            "theaters": theaters,
-            "current_theater_code": current_theater_code,
+            "imax_theaters": imax_theaters,
+            "imax_selected_codes": imax_selected_codes,
+            "preferred_theaters": preferred_theaters,
             "llm_priority": llm_priority,
             "creds": creds,
             "env_creds": env_creds,
@@ -162,28 +261,76 @@ async def update_intervals(
     )
 
 
-@app.post("/settings/theater", response_class=HTMLResponse)
-async def update_theater(request: Request, theater: str = Form(...)):
+@app.post("/settings/imax-theaters", response_class=HTMLResponse)
+async def update_imax_theaters(request: Request):
+    """Save selected IMAX monitor theaters (checkbox form)."""
     mgr = _get_mgr()
+    form = await request.form()
 
-    # theater value format: "code:region:name"
-    parts = theater.split(":", 2)
-    if len(parts) != 3:
+    # Checkboxes: multiple values with name "imax_theater"
+    # Each value is "code:region:name"
+    selected = form.getlist("imax_theater")
+
+    theaters: list[dict] = []
+    for val in selected:
+        parts = val.split(":", 2)
+        if len(parts) == 3:
+            theaters.append({"code": parts[0], "region": parts[1], "name": parts[2]})
+
+    await mgr.set(
+        "imax_monitor_theaters", json.dumps(theaters, ensure_ascii=False)
+    )
+
+    names = [t["name"] for t in theaters]
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/imax_theaters_status.html",
+        context={"theater_names": names, "count": len(theaters)},
+    )
+
+
+@app.post("/settings/preferred-theaters", response_class=HTMLResponse)
+async def update_preferred_theaters(request: Request):
+    """Save preferred theaters list (JSON from hidden input)."""
+    mgr = _get_mgr()
+    form = await request.form()
+
+    raw = form.get("preferred_theaters_json", "[]")
+    try:
+        theaters = json.loads(raw)
+    except json.JSONDecodeError:
         return templates.TemplateResponse(
             request=request,
             name="partials/error.html",
-            context={"message": "잘못된 영화관 데이터입니다."},
+            context={"message": "잘못된 데이터입니다."},
         )
 
-    code, region, name = parts
-    await mgr.set("preferred_theater_code", code)
-    await mgr.set("preferred_theater_region", region)
-    await mgr.set("preferred_theater_name", name)
+    await mgr.set(
+        "preferred_theaters", json.dumps(theaters, ensure_ascii=False)
+    )
 
     return templates.TemplateResponse(
         request=request,
-        name="partials/theater_status.html",
-        context={"theater_name": name},
+        name="partials/preferred_theaters_status.html",
+        context={"count": len(theaters)},
+    )
+
+
+@app.get("/api/theaters/search", response_class=HTMLResponse)
+async def search_theaters(request: Request, q: str = Query("")):
+    """HTMX endpoint: search theaters across all chains."""
+    if len(q.strip()) < 1:
+        return HTMLResponse("")
+
+    query = q.strip().lower()
+    all_theaters = await asyncio.to_thread(_build_theater_cache)
+
+    matches = [t for t in all_theaters if query in t["name"].lower()][:20]
+
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/theater_search_results.html",
+        context={"results": matches, "chain_display": _CHAIN_DISPLAY},
     )
 
 

@@ -114,9 +114,30 @@ class BookingAgent:
             f"{now.strftime('%Y년 %m월 %d일')} "
             f"({_DAYS_KO[now.weekday()]}요일)"
         )
+        # Build preferred theaters context
+        preferred_theaters_text = "등록된 선호 영화관이 없습니다."
+        try:
+            from cinepyle.dashboard.settings_manager import SettingsManager
+            mgr = SettingsManager.get_instance()
+            prefs = mgr.get_preferred_theaters()
+            if prefs:
+                _chain_display = {"cgv": "CGV", "lotte": "롯데시네마", "megabox": "메가박스", "cineq": "씨네Q"}
+                lines = []
+                for t in prefs:
+                    chain_label = _chain_display.get(t["chain_key"], t["chain_key"])
+                    lines.append(
+                        f"- {t['name']} ({chain_label}) "
+                        f"[chain_key: {t['chain_key']}, ID: {t['theater_code']}, "
+                        f"RegionCode: {t.get('region_code', '')}]"
+                    )
+                preferred_theaters_text = "\n".join(lines)
+        except (RuntimeError, ImportError):
+            pass
+
         system = BOOKING_SYSTEM_PROMPT.format(
             state_summary=self.state.summary_for_llm(),
             today=today_str,
+            preferred_theaters=preferred_theaters_text,
         )
 
         # Agent loop: LLM may emit multiple sequential tool calls

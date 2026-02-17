@@ -32,21 +32,21 @@
     </form>
 </div>
 
-{# ── Theater Selection Card ── #}
+{# ── IMAX Monitor Theaters Card ── #}
 <div class="card p-6">
-    <h2 class="text-lg font-semibold mb-1">선호 영화관</h2>
-    <p class="text-muted-foreground text-sm mb-4">IMAX 상영 체크 대상 CGV 영화관을 선택합니다.</p>
-    <form hx-post="/settings/theater" hx-target="#theater-feedback" hx-swap="innerHTML">
-        <div class="mb-4">
-            <label class="block text-sm text-muted-foreground mb-1">CGV 영화관</label>
-            <select name="theater" class="input-field rounded-md px-3 py-2 w-full text-sm">
-                {% for t in theaters %}
-                <option value="{{ t.TheaterCode }}:{{ t.RegionCode }}:{{ t.TheaterName }}"
-                        {% if t.TheaterCode == current_theater_code %}selected{% endif %}>
-                    {{ t.TheaterName }}
-                </option>
-                {% endfor %}
-            </select>
+    <h2 class="text-lg font-semibold mb-1">IMAX 체크 상영관</h2>
+    <p class="text-muted-foreground text-sm mb-4">IMAX 상영을 모니터링할 CGV 영화관을 선택합니다.</p>
+    <form hx-post="/settings/imax-theaters" hx-target="#imax-feedback" hx-swap="innerHTML">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+            {% for t in imax_theaters %}
+            <label class="flex items-center gap-2 px-3 py-2 rounded-md border border-border bg-background cursor-pointer hover:bg-zinc-800/50 transition-colors">
+                <input type="checkbox" name="imax_theater"
+                       value="{{ t.TheaterCode }}:{{ t.RegionCode }}:{{ t.TheaterName }}"
+                       {% if t.TheaterCode in imax_selected_codes %}checked{% endif %}
+                       class="rounded border-border accent-orange-500">
+                <span class="text-sm">{{ t.TheaterName }}</span>
+            </label>
+            {% endfor %}
         </div>
         <div class="flex items-center gap-3">
             <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
@@ -54,9 +54,109 @@
             </button>
             <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
         </div>
-        <div id="theater-feedback" class="mt-3 text-sm"></div>
+        <div id="imax-feedback" class="mt-3 text-sm"></div>
     </form>
 </div>
+
+{# ── Preferred Theaters Card ── #}
+<div class="card p-6">
+    <h2 class="text-lg font-semibold mb-1">선호 영화관</h2>
+    <p class="text-muted-foreground text-sm mb-4">예매 시 우선 추천할 영화관을 등록합니다. (CGV, 롯데시네마, 메가박스, 씨네Q)</p>
+
+    {# Search input #}
+    <div class="mb-4 relative">
+        <label class="block text-sm text-muted-foreground mb-1">영화관 검색</label>
+        <input type="text" id="theater-search-input"
+               placeholder="극장명 검색 (예: 용산, 코엑스, 건대)"
+               hx-get="/api/theaters/search"
+               hx-trigger="keyup changed delay:300ms"
+               hx-target="#theater-search-results"
+               hx-swap="innerHTML"
+               name="q"
+               class="input-field rounded-md px-3 py-2 w-full text-sm"
+               autocomplete="off">
+        <div id="theater-search-results" class="mt-1"></div>
+    </div>
+
+    {# Selected theaters list #}
+    <div class="mb-4">
+        <label class="block text-sm text-muted-foreground mb-1">등록된 영화관</label>
+        <div id="preferred-theaters-list" class="space-y-1">
+            {% for t in preferred_theaters %}
+            <div class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
+                 data-chain="{{ t.chain_key }}" data-code="{{ t.theater_code }}"
+                 data-region="{{ t.region_code }}" data-name="{{ t.name }}">
+                <span class="text-sm">
+                    <span class="text-xs text-muted-foreground mr-1">
+                        {% if t.chain_key == 'cgv' %}CGV{% elif t.chain_key == 'lotte' %}롯데{% elif t.chain_key == 'megabox' %}메가박스{% elif t.chain_key == 'cineq' %}씨네Q{% endif %}
+                    </span>
+                    {{ t.name }}
+                </span>
+                <button type="button" onclick="removePreferredTheater(this)"
+                        class="text-muted-foreground hover:text-red-400 text-xs transition-colors">삭제</button>
+            </div>
+            {% endfor %}
+        </div>
+        <p id="preferred-empty" class="text-xs text-muted-foreground mt-1"
+           {% if preferred_theaters %}style="display:none"{% endif %}>
+            등록된 영화관이 없습니다.
+        </p>
+    </div>
+
+    {# Hidden form for saving #}
+    <form hx-post="/settings/preferred-theaters" hx-target="#preferred-feedback" hx-swap="innerHTML">
+        <input type="hidden" name="preferred_theaters_json" id="preferred-theaters-json" value="">
+        <div class="flex items-center gap-3">
+            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium"
+                    onclick="syncPreferredJson()">저장</button>
+            <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
+        </div>
+        <div id="preferred-feedback" class="mt-3 text-sm"></div>
+    </form>
+</div>
+
+<script>
+function addPreferredTheater(chainKey, code, region, name) {
+    const list = document.getElementById('preferred-theaters-list');
+    if (list.querySelector('[data-chain="' + chainKey + '"][data-code="' + code + '"]')) return;
+
+    const chainLabels = {cgv: 'CGV', lotte: '롯데', megabox: '메가박스', cineq: '씨네Q'};
+    const div = document.createElement('div');
+    div.className = 'flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background';
+    div.dataset.chain = chainKey;
+    div.dataset.code = code;
+    div.dataset.region = region || '';
+    div.dataset.name = name;
+    div.innerHTML = '<span class="text-sm"><span class="text-xs text-muted-foreground mr-1">' +
+        (chainLabels[chainKey] || chainKey) + '</span>' + name + '</span>' +
+        '<button type="button" onclick="removePreferredTheater(this)" ' +
+        'class="text-muted-foreground hover:text-red-400 text-xs transition-colors">삭제</button>';
+    list.appendChild(div);
+    document.getElementById('preferred-empty').style.display = 'none';
+
+    document.getElementById('theater-search-input').value = '';
+    document.getElementById('theater-search-results').innerHTML = '';
+}
+
+function removePreferredTheater(btn) {
+    btn.parentElement.remove();
+    const list = document.getElementById('preferred-theaters-list');
+    if (!list.children.length) {
+        document.getElementById('preferred-empty').style.display = '';
+    }
+}
+
+function syncPreferredJson() {
+    const items = document.querySelectorAll('#preferred-theaters-list > div');
+    const arr = Array.from(items).map(el => ({
+        chain_key: el.dataset.chain,
+        theater_code: el.dataset.code,
+        region_code: el.dataset.region,
+        name: el.dataset.name,
+    }));
+    document.getElementById('preferred-theaters-json').value = JSON.stringify(arr);
+}
+</script>
 
 {# ── LLM Priority Card ── #}
 <div class="card p-6">

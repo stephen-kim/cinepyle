@@ -52,6 +52,20 @@ def _get_theater_config() -> tuple[str, str]:
     return DEFAULT_THEATER_CODE, DEFAULT_REGION_CODE
 
 
+def _get_imax_theater_configs() -> list[dict]:
+    """Return list of IMAX monitor theater configs from settings.
+
+    Each dict has keys: code, region, name.
+    Falls back to default (CGV용산아이파크몰) if none configured.
+    """
+    mgr = _get_settings()
+    if mgr:
+        theaters = mgr.get_imax_monitor_theaters()
+        if theaters:
+            return theaters
+    return [{"code": DEFAULT_THEATER_CODE, "region": DEFAULT_REGION_CODE, "name": "CGV용산아이파크몰"}]
+
+
 def _get_engine() -> HealingEngine:
     global _engine
     if _engine is None:
@@ -126,7 +140,7 @@ HARDCODED_IMAX_JS = """(() => {
 
 
 async def check_imax_screening() -> tuple[str, str] | None:
-    """Check preferred CGV theater for IMAX screenings.
+    """Check preferred CGV theater for IMAX screenings (legacy single-theater).
 
     Theater is read from SettingsManager (defaults to CGV용산아이파크몰).
     Uses the self-healing engine: tries cached strategy, then
@@ -164,3 +178,45 @@ async def check_imax_screening() -> tuple[str, str] | None:
         return None
     finally:
         await page.close()
+
+
+async def check_imax_screenings() -> list[tuple[str, str, str]]:
+    """Check configured CGV theaters for IMAX screenings.
+
+    Iterates over all IMAX monitor theaters from settings.
+    Each theater is checked sequentially (~5s per theater).
+
+    Returns list of (movie_title, booking_url, theater_name) tuples.
+    Empty list if no IMAX screenings found.
+    """
+    theaters = _get_imax_theater_configs()
+    results: list[tuple[str, str, str]] = []
+
+    for theater in theaters:
+        code = theater["code"]
+        region = theater["region"]
+        name = theater["name"]
+        theater_url = f"https://cgv.co.kr/cnm/bzplcCgv/{region}{code}"
+
+        page = await get_page()
+        try:
+            await page.goto(theater_url, wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(2000)
+
+            content = await page.content()
+            if "IMAX" not in content.upper():
+                continue
+
+            engine = _get_engine()
+            task = _make_imax_task(theater_url)
+            title = await engine.extract(page, task, hardcoded_js=HARDCODED_IMAX_JS)
+
+            if title:
+                booking_url = f"{CGV_BOOKING_URL}?theaterCode={code}"
+                results.append((title, booking_url, name))
+        except Exception:
+            logger.exception("Failed to check IMAX at %s", name)
+        finally:
+            await page.close()
+
+    return results

@@ -1,8 +1,11 @@
 """IMAX screening notification service.
 
-Checks CGV용산아이파크몰 for new IMAX screenings and sends
+Checks configured CGV theaters for new IMAX screenings and sends
 Telegram notifications. Previously-notified titles are persisted
 in SQLite so restarts don't cause duplicate alerts.
+
+Dedup key format: "theater_name::movie_title" to distinguish the
+same movie at different theaters.
 """
 
 import logging
@@ -11,7 +14,7 @@ from telegram.ext import ContextTypes
 
 from cinepyle.config import NOTIFICATION_DB_PATH
 from cinepyle.notifications.store import NotificationStore
-from cinepyle.scrapers.cgv import check_imax_screening
+from cinepyle.scrapers.cgv import check_imax_screenings
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +33,29 @@ async def check_imax_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = context.job.data
 
     try:
-        result = await check_imax_screening()
+        results = await check_imax_screenings()
     except Exception:
-        logger.exception("Failed to check IMAX screening")
+        logger.exception("Failed to check IMAX screenings")
         return
 
-    if result is None:
+    if not results:
         return
 
-    title, booking_url = result
     store = _get_store()
 
-    if await store.is_imax_notified(title):
-        return
+    for title, booking_url, theater_name in results:
+        # Composite dedup key: "theater_name::title"
+        dedup_key = f"{theater_name}::{title}"
 
-    await store.add_imax_title(title)
+        if await store.is_imax_notified(dedup_key):
+            continue
 
-    text = f"🎬 CGV용산아이파크몰에서 [{title}] IMAX 상영이 시작되었습니다!"
-    await context.bot.send_message(chat_id=chat_id, text=text)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"예매하기: {booking_url}",
-    )
-    logger.info("IMAX notification sent: %s", title)
+        await store.add_imax_title(dedup_key)
+
+        text = f"🎬 {theater_name}에서 [{title}] IMAX 상영이 시작되었습니다!"
+        await context.bot.send_message(chat_id=chat_id, text=text)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"예매하기: {booking_url}",
+        )
+        logger.info("IMAX notification sent: %s at %s", title, theater_name)
