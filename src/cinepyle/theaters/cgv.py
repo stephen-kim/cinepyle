@@ -33,8 +33,18 @@ _engine: HealingEngine | None = None
 def _get_engine() -> HealingEngine:
     global _engine
     if _engine is None:
+        try:
+            from cinepyle.dashboard.settings_manager import SettingsManager
+            mgr = SettingsManager.get_instance()
+            anthropic_key = mgr.get("credential:anthropic_api_key") or ANTHROPIC_API_KEY
+            openai_key = mgr.get("credential:openai_api_key") or OPENAI_API_KEY
+            gemini_key = mgr.get("credential:gemini_api_key") or GEMINI_API_KEY
+            priority = mgr.get_llm_priority()
+        except (RuntimeError, ImportError):
+            anthropic_key, openai_key, gemini_key = ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY
+            priority = None
         _engine = HealingEngine(
-            resolve_llm_config(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY),
+            resolve_llm_config(anthropic_key, openai_key, gemini_key, priority=priority),
             HEALING_DB_PATH,
         )
     return _engine
@@ -109,14 +119,24 @@ def filter_nearest(
     return [theater for _, theater in with_distance[:n]]
 
 
-async def get_movie_schedule(area_code: str, theater_code: str) -> str:
-    """Fetch today's movie schedule for a CGV theater.
+async def get_movie_schedule(
+    area_code: str, theater_code: str, play_date: str | None = None
+) -> str:
+    """Fetch movie schedule for a CGV theater.
+
+    Args:
+        area_code: CGV region code (e.g. "01")
+        theater_code: CGV theater code (e.g. "0013")
+        play_date: Date string in YYYYMMDD format. Defaults to today.
+            Note: CGV's URL-based schedule may not fully support date selection.
 
     Uses Playwright to render the Next.js-based theater page and
     the self-healing engine to extract schedule data. If the hardcoded
     extraction breaks, Claude generates a new strategy automatically.
     """
     theater_url = f"{CGV_THEATER_BASE_URL}/{area_code}{theater_code}"
+    if play_date:
+        theater_url += f"?date={play_date}"
 
     page = await get_page()
     try:

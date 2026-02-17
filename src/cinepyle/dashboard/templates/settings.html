@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block content %}
+
+{# ── Intervals Card ── #}
+<div class="card p-6">
+    <h2 class="text-lg font-semibold mb-1">알림 주기 설정</h2>
+    <p class="text-muted-foreground text-sm mb-4">IMAX 및 신작 영화 체크 주기를 설정합니다.</p>
+    <form hx-post="/settings/intervals" hx-target="#intervals-feedback" hx-swap="innerHTML">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+            <div>
+                <label class="block text-sm text-muted-foreground mb-1">IMAX 체크 주기 (초)</label>
+                <input type="number" name="imax_interval" value="{{ imax_interval }}"
+                       min="60" max="86400" step="60"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm">
+                <p class="text-xs text-muted-foreground mt-1">최소 60초, 최대 86400초 (24시간)</p>
+            </div>
+            <div>
+                <label class="block text-sm text-muted-foreground mb-1">신작 영화 체크 주기 (초)</label>
+                <input type="number" name="new_movie_interval" value="{{ new_movie_interval }}"
+                       min="60" max="86400" step="60"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm">
+                <p class="text-xs text-muted-foreground mt-1">최소 60초, 최대 86400초 (24시간)</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
+                저장
+            </button>
+            <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
+        </div>
+        <div id="intervals-feedback" class="mt-3 text-sm"></div>
+    </form>
+</div>
+
+{# ── Theater Selection Card ── #}
+<div class="card p-6">
+    <h2 class="text-lg font-semibold mb-1">선호 영화관</h2>
+    <p class="text-muted-foreground text-sm mb-4">IMAX 상영 체크 대상 CGV 영화관을 선택합니다.</p>
+    <form hx-post="/settings/theater" hx-target="#theater-feedback" hx-swap="innerHTML">
+        <div class="mb-4">
+            <label class="block text-sm text-muted-foreground mb-1">CGV 영화관</label>
+            <select name="theater" class="input-field rounded-md px-3 py-2 w-full text-sm">
+                {% for t in theaters %}
+                <option value="{{ t.TheaterCode }}:{{ t.RegionCode }}:{{ t.TheaterName }}"
+                        {% if t.TheaterCode == current_theater_code %}selected{% endif %}>
+                    {{ t.TheaterName }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="flex items-center gap-3">
+            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
+                저장
+            </button>
+            <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
+        </div>
+        <div id="theater-feedback" class="mt-3 text-sm"></div>
+    </form>
+</div>
+
+{# ── LLM Priority Card ── #}
+<div class="card p-6">
+    <h2 class="text-lg font-semibold mb-1">LLM 우선순위</h2>
+    <p class="text-muted-foreground text-sm mb-4">자가 복구 및 예매 에이전트에서 사용할 LLM 제공자 우선순위를 드래그로 설정합니다.</p>
+    <form hx-post="/settings/llm-priority" hx-target="#llm-feedback" hx-swap="innerHTML">
+        <div id="llm-sortable" class="space-y-2 mb-4">
+            {% for provider in llm_priority %}
+            <div class="flex items-center gap-3 px-4 py-3 rounded-md border border-border bg-background cursor-move"
+                 data-provider="{{ provider }}">
+                <span class="text-muted-foreground">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
+                </span>
+                <span class="font-mono text-sm">{{ loop.index }}.</span>
+                {% if provider == "anthropic" %}
+                <span>Anthropic <span class="text-muted-foreground">(Claude)</span></span>
+                {% elif provider == "openai" %}
+                <span>OpenAI <span class="text-muted-foreground">(GPT)</span></span>
+                {% elif provider == "gemini" %}
+                <span>Google <span class="text-muted-foreground">(Gemini)</span></span>
+                {% endif %}
+                <input type="hidden" name="priority" value="{{ provider }}">
+            </div>
+            {% endfor %}
+        </div>
+        <div class="flex items-center gap-3">
+            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
+                저장
+            </button>
+            <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
+        </div>
+        <div id="llm-feedback" class="mt-3 text-sm"></div>
+    </form>
+    <script>
+        new Sortable(document.getElementById('llm-sortable'), {
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+            chosenClass: 'sortable-chosen',
+            onEnd: function () {
+                // Update hidden input values and visible numbers after drag
+                const items = document.querySelectorAll('#llm-sortable > div');
+                items.forEach((item, i) => {
+                    item.querySelector('.font-mono').textContent = (i + 1) + '.';
+                });
+            }
+        });
+    </script>
+</div>
+
+{# ── Credentials Card ── #}
+<div class="card p-6">
+    <h2 class="text-lg font-semibold mb-1">크리덴셜 / API 키</h2>
+    <p class="text-muted-foreground text-sm mb-4">빈 칸은 기존 값을 유지합니다. 새 값을 입력하면 덮어씁니다.</p>
+    <form hx-post="/settings/credentials" hx-target="#credentials-feedback" hx-swap="innerHTML">
+
+        {# Theater logins #}
+        <h3 class="text-sm font-medium text-muted-foreground mb-3 mt-2">영화관 로그인</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+            {% for chain, label in [("cgv", "CGV"), ("lottecinema", "롯데시네마"), ("megabox", "메가박스"), ("cineq", "CineQ")] %}
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">{{ label }} ID</label>
+                <input type="text" name="credential:{{ chain }}_id"
+                       placeholder="{% if creds['credential:' ~ chain ~ '_id'] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm" autocomplete="off">
+            </div>
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">{{ label }} 비밀번호</label>
+                <input type="password" name="credential:{{ chain }}_password"
+                       placeholder="{% if creds['credential:' ~ chain ~ '_password'] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm" autocomplete="off">
+            </div>
+            {% endfor %}
+        </div>
+
+        {# API Keys #}
+        <h3 class="text-sm font-medium text-muted-foreground mb-3">API 키</h3>
+        <div class="grid grid-cols-1 gap-3 mb-5">
+            {% for key, label in [("anthropic_api_key", "Anthropic API Key"), ("openai_api_key", "OpenAI API Key"), ("gemini_api_key", "Gemini API Key"), ("kofic_api_key", "KOFIC (영진위) API Key")] %}
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">{{ label }}</label>
+                <input type="password" name="credential:{{ key }}"
+                       placeholder="{% if creds['credential:' ~ key] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono" autocomplete="off">
+            </div>
+            {% endfor %}
+        </div>
+
+        {# Watcha #}
+        <h3 class="text-sm font-medium text-muted-foreground mb-3">Watcha Pedia</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">Watcha 이메일</label>
+                <input type="text" name="credential:watcha_email"
+                       placeholder="{% if creds['credential:watcha_email'] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm" autocomplete="off">
+            </div>
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">Watcha 비밀번호</label>
+                <input type="password" name="credential:watcha_password"
+                       placeholder="{% if creds['credential:watcha_password'] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm" autocomplete="off">
+            </div>
+        </div>
+
+        {# Naver Maps #}
+        <h3 class="text-sm font-medium text-muted-foreground mb-3">네이버 지도 API</h3>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">Client ID</label>
+                <input type="password" name="credential:naver_maps_client_id"
+                       placeholder="{% if creds['credential:naver_maps_client_id'] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono" autocomplete="off">
+            </div>
+            <div>
+                <label class="block text-xs text-muted-foreground mb-1">Client Secret</label>
+                <input type="password" name="credential:naver_maps_client_secret"
+                       placeholder="{% if creds['credential:naver_maps_client_secret'] %}******{% else %}미설정{% endif %}"
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono" autocomplete="off">
+            </div>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
+                저장
+            </button>
+            <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
+        </div>
+        <div id="credentials-feedback" class="mt-3 text-sm"></div>
+    </form>
+</div>
+
+{% endblock %}

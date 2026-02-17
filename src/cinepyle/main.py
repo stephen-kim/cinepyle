@@ -1,18 +1,33 @@
-"""Cinepyle bot entry point."""
+"""Cinepyle bot entry point.
 
+Runs the Telegram bot and FastAPI dashboard concurrently
+on the same asyncio event loop.
+"""
+
+import asyncio
 import logging
+from datetime import time as dt_time
+from zoneinfo import ZoneInfo
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+import uvicorn
+from telegram.ext import Application, CommandHandler
 
 from cinepyle.bot.booking import build_booking_handlers
 from cinepyle.bot.handlers import (
     help_command,
-    location_handler,
     nearby_command,
     ranking_command,
     start_command,
 )
-from cinepyle.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from cinepyle.config import (
+    DASHBOARD_PORT,
+    SETTINGS_DB_PATH,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+)
+from cinepyle.dashboard.app import app as fastapi_app
+from cinepyle.dashboard.settings_manager import SettingsManager
+from cinepyle.notifications.daily_digest import daily_digest_job
 from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
 from cinepyle.scrapers.browser import close_browser
@@ -30,59 +45,90 @@ async def post_shutdown(application: Application) -> None:
     await close_browser()
 
 
-def main() -> None:
-    """Build and run the bot."""
+async def async_main() -> None:
+    """Async entry point: run Telegram bot + FastAPI dashboard concurrently."""
+    # 1. Initialise settings manager
+    settings = await SettingsManager.create(SETTINGS_DB_PATH)
+
+    # 2. Build Telegram Application
     app = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .post_shutdown(post_shutdown)
         .build()
     )
+    settings.set_telegram_app(app)
 
-    # NLP booking handlers (returns [/book, callback, text_handler])
+    # 3. Register handlers
     booking_handlers = build_booking_handlers()
 
-    # /book command (must be before generic text handler)
-    app.add_handler(booking_handlers[0])
+    app.add_handler(booking_handlers[0])  # /book command
 
-    # Command handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("ranking", ranking_command))
     app.add_handler(CommandHandler("nearby", nearby_command))
 
-    # Location message handler
-    app.add_handler(MessageHandler(filters.LOCATION, location_handler))
+    app.add_handler(booking_handlers[1])  # Location handler
+    app.add_handler(booking_handlers[2])  # Payment callback handler
+    app.add_handler(booking_handlers[3])  # NLP text catch-all (MUST be last)
 
-    # Payment callback handler
-    app.add_handler(booking_handlers[1])
-
-    # NLP text catch-all (MUST be last — catches free-text booking intents)
-    app.add_handler(booking_handlers[2])
-
-    # Scheduled jobs
+    # 4. Scheduled jobs (intervals from settings, fallback to defaults)
     job_queue = app.job_queue
 
-    # IMAX check: every 30 seconds
+    imax_interval = int(settings.get("imax_check_interval", "600"))
     job_queue.run_repeating(
         check_imax_job,
-        interval=30,
+        interval=imax_interval,
         first=10,
         data=TELEGRAM_CHAT_ID,
         name="imax_check",
     )
 
-    # New movie check: every hour
+    new_movie_interval = int(settings.get("new_movie_check_interval", "3600"))
     job_queue.run_repeating(
         check_new_movies_job,
-        interval=3600,
+        interval=new_movie_interval,
         first=5,
         data=TELEGRAM_CHAT_ID,
         name="new_movie_check",
     )
 
-    logger.info("Bot starting...")
-    app.run_polling()
+    KST = ZoneInfo("Asia/Seoul")
+    job_queue.run_daily(
+        daily_digest_job,
+        time=dt_time(hour=9, minute=0, tzinfo=KST),
+        data=TELEGRAM_CHAT_ID,
+        name="daily_digest",
+    )
+
+    # 5. Run Telegram bot + FastAPI dashboard concurrently
+    config = uvicorn.Config(
+        fastapi_app,
+        host="0.0.0.0",
+        port=DASHBOARD_PORT,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+
+    logger.info("Bot starting (dashboard on port %d)...", DASHBOARD_PORT)
+
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+
+        try:
+            await server.serve()
+        finally:
+            logger.info("Shutting down...")
+            await app.updater.stop()
+            await app.stop()
+            await settings.close()
+
+
+def main() -> None:
+    """Build and run the bot."""
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":

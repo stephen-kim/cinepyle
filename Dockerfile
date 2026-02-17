@@ -27,4 +27,6 @@ COPY src/ src/
 # Install the project
 RUN uv sync --no-dev
 
+EXPOSE 3847
+
 CMD ["uv", "run", "cinepyle"]

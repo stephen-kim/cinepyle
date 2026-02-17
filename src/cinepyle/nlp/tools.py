@@ -10,6 +10,7 @@ import logging
 
 from cinepyle.nlp.state import BookingState
 from cinepyle.theaters import cgv, cineq, lotte, megabox
+from cinepyle.theaters.finder import find_nearest_theaters
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,9 @@ async def execute_tool(
         "CANCELLED" — signals the agent to cancel and reset
     """
     try:
-        if tool_name == "search_theaters":
+        if tool_name == "find_nearby_theaters":
+            return _exec_find_nearby(arguments, state)
+        elif tool_name == "search_theaters":
             return await _exec_search_theaters(arguments, state)
         elif tool_name == "get_schedule":
             return await _exec_get_schedule(arguments, state)
@@ -50,6 +53,49 @@ async def execute_tool(
     except Exception:
         logger.exception("Tool execution failed: %s", tool_name)
         return f"도구 실행 실패: {tool_name}"
+
+
+def _exec_find_nearby(args: dict, state: BookingState) -> str:
+    """Find nearby theaters using user's stored location."""
+    if state.user_latitude is None or state.user_longitude is None:
+        return (
+            "사용자 위치 정보가 없습니다. "
+            "위치를 전송해달라고 요청해주세요. (텔레그램의 📍 위치 전송 기능)"
+        )
+
+    count = min(args.get("count", 5), 10)
+    theaters = find_nearest_theaters(
+        state.user_latitude, state.user_longitude, n=count
+    )
+
+    if not theaters:
+        return "근처에 영화관을 찾을 수 없습니다."
+
+    # Store in available_theaters for later use by get_schedule
+    state.available_theaters = theaters
+
+    lines = [f"근처 영화관 ({len(theaters)}개):"]
+    for i, t in enumerate(theaters, 1):
+        chain_key = t.get("ChainKey", "")
+        theater_code = t.get("TheaterCode", "")
+        region_code = t.get("RegionCode", "")
+        dist = t.get("DistanceKm", "?")
+        bookable = chain_key in ("cgv", "lotte", "megabox", "cineq")
+
+        line = (
+            f"{i}. {t['TheaterName']} ({t['Chain']}) — {dist}km"
+        )
+        if bookable:
+            line += f" [chain_key: {chain_key}, ID: {theater_code}"
+            if region_code:
+                line += f", RegionCode: {region_code}"
+            line += "]"
+        else:
+            line += " (예매 불가)"
+
+        lines.append(line)
+
+    return "\n".join(lines)
 
 
 async def _exec_search_theaters(args: dict, state: BookingState) -> str:
@@ -92,20 +138,28 @@ async def _exec_search_theaters(args: dict, state: BookingState) -> str:
 
 
 async def _exec_get_schedule(args: dict, state: BookingState) -> str:
-    """Fetch today's schedule for a theater."""
+    """Fetch schedule for a theater (optionally on a specific date)."""
     chain = args["chain"]
     theater_id = args["theater_id"]
+    play_date = args.get("play_date") or state.play_date
 
     state.chain = chain
     state.theater_id = theater_id
+    if play_date:
+        state.play_date = play_date
 
-    # Resolve theater name from available_theaters
+    # Resolve theater name and location from available_theaters
     for t in state.available_theaters:
         tid = str(
             t.get("TheaterCode", t.get("TheaterID", t.get("brchNo", "")))
         )
         if tid == str(theater_id):
             state.theater_name = t.get("TheaterName", "")
+            # Store theater coordinates for Naver Directions
+            if t.get("Latitude") is not None:
+                state.theater_latitude = float(t["Latitude"])
+            if t.get("Longitude") is not None:
+                state.theater_longitude = float(t["Longitude"])
             if chain == "cgv":
                 state.theater_region = t.get("RegionCode", "")
             break
@@ -114,12 +168,12 @@ async def _exec_get_schedule(args: dict, state: BookingState) -> str:
         if chain == "cgv":
             # CGV is async and returns formatted text
             region = args.get("region_code") or state.theater_region or ""
-            text = await cgv.get_movie_schedule(region, theater_id)
+            text = await cgv.get_movie_schedule(region, theater_id, play_date)
             return f"CGV 상영 스케줄:\n{text}"
         else:
             # Lotte, MegaBox, CineQ are sync and return dict
             module = _THEATER_MODULES[chain]
-            schedule = module.get_movie_schedule(theater_id)
+            schedule = module.get_movie_schedule(theater_id, play_date)
             state.available_movies = schedule
 
             if not schedule:

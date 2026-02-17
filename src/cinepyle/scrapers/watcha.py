@@ -35,8 +35,18 @@ _engine: HealingEngine | None = None
 def _get_engine() -> HealingEngine:
     global _engine
     if _engine is None:
+        try:
+            from cinepyle.dashboard.settings_manager import SettingsManager
+            mgr = SettingsManager.get_instance()
+            anthropic_key = mgr.get("credential:anthropic_api_key") or ANTHROPIC_API_KEY
+            openai_key = mgr.get("credential:openai_api_key") or OPENAI_API_KEY
+            gemini_key = mgr.get("credential:gemini_api_key") or GEMINI_API_KEY
+            priority = mgr.get_llm_priority()
+        except (RuntimeError, ImportError):
+            anthropic_key, openai_key, gemini_key = ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY
+            priority = None
         _engine = HealingEngine(
-            resolve_llm_config(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY),
+            resolve_llm_config(anthropic_key, openai_key, gemini_key, priority=priority),
             HEALING_DB_PATH,
         )
     return _engine
