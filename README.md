@@ -62,8 +62,14 @@ uv run cinepyle
 ### Docker
 
 ```bash
-docker compose up --build
+docker compose up -d
 # 대시보드: http://localhost:3847
+```
+
+로컬 빌드로 실행하려면:
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
 ```
 
 ## 기술 스택
