@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Korean cinema Telegram bot - box office rankings, new movie alerts, IMAX notifications, and nearby theater finder"
 requires-python = ">=3.14"
 dependencies = [
-    "python-telegram-bot>=21.0",
+    "python-telegram-bot[job-queue]>=21.0",
     "python-dotenv>=1.1.0",
     "requests>=2.32.0",
     "beautifulsoup4>=4.13.0",
