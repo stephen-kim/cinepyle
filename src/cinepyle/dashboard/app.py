@@ -31,6 +31,25 @@ _PROVIDER_NAMES = {
     "gemini": "Google (Gemini)",
 }
 
+# Mapping: provider name → credential key for API key
+_PROVIDER_API_KEY_MAP = {
+    "anthropic": "credential:anthropic_api_key",
+    "openai": "credential:openai_api_key",
+    "gemini": "credential:gemini_api_key",
+}
+
+
+def _provider_has_key(mgr, provider: str) -> bool:
+    """Check if a provider has an API key set (via dashboard or .env)."""
+    cred_key = _PROVIDER_API_KEY_MAP.get(provider, "")
+    if not cred_key:
+        return False
+    # Check dashboard DB
+    if mgr.get(cred_key, ""):
+        return True
+    # Check .env
+    return _env_cred_set(cred_key)
+
 
 def _get_mgr():
     from cinepyle.dashboard.settings_manager import SettingsManager
@@ -105,15 +124,32 @@ def _build_theater_cache() -> list[dict]:
     except Exception:
         logger.exception("Failed to fetch Lotte theaters")
 
-    # Megabox (API)
+    # Megabox (API) — lightweight: extract branch names from schedule list
+    # (avoids the per-theater API call in megabox.get_theater_list())
     try:
-        from cinepyle.theaters import megabox
-        for t in megabox.get_theater_list():
+        import requests as _requests
+        from datetime import datetime as _dt
+
+        _mega_url = "https://www.megabox.co.kr/on/oh/ohc/Brch/schedulePage.do"
+        _mega_res = _requests.post(
+            _mega_url,
+            data={"masterType": "brch", "playDe": _dt.now().strftime("%Y%m%d")},
+            timeout=10,
+        ).json()
+        _mega_items = _mega_res.get("megaMap", {}).get("movieFormList", [])
+
+        _mega_seen: dict[str, str] = {}  # brchNo → brchNm
+        for s in _mega_items:
+            bid = str(s.get("brchNo", ""))
+            if bid and bid not in _mega_seen:
+                _mega_seen[bid] = s.get("brchNm", bid)
+
+        for bid, bname in _mega_seen.items():
             all_theaters.append({
                 "chain_key": "megabox",
-                "theater_code": str(t.get("TheaterID", t.get("brchNo", ""))),
+                "theater_code": bid,
                 "region_code": "",
-                "name": t["TheaterName"],
+                "name": f"{bname} 메가박스",
             })
     except Exception:
         logger.exception("Failed to fetch Megabox theaters")
@@ -198,8 +234,9 @@ async def settings_page(request: Request):
     # Preferred theaters
     preferred_theaters = mgr.get_preferred_theaters()
 
-    # LLM priority
-    llm_priority = mgr.get_llm_priority()
+    # LLM priority — only show providers that have an API key configured
+    all_llm_priority = mgr.get_llm_priority()
+    llm_priority = [p for p in all_llm_priority if _provider_has_key(mgr, p)]
 
     # Credentials — check which ones are set (dashboard DB or .env)
     creds: dict[str, bool] = {}
@@ -372,10 +409,17 @@ async def update_credentials(request: Request):
     if count > 0:
         mgr.reset_engines()
 
+    # Build updated LLM priority list (only providers with keys)
+    all_llm_priority = mgr.get_llm_priority()
+    available_providers = [p for p in all_llm_priority if _provider_has_key(mgr, p)]
+
     return templates.TemplateResponse(
         request=request,
         name="partials/credentials_status.html",
-        context={"count": count},
+        context={
+            "count": count,
+            "llm_priority": available_providers,
+        },
     )
 
 

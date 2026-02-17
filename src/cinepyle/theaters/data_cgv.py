@@ -7,7 +7,6 @@ data = [{'TheaterCode': '0260', 'Latitude': 37.4078263, 'TheaterName': 'CGV경�
 IMAX_THEATER_CODES: set[str] = {
     "0013",  # CGV용산아이파크몰 (IMAX GT 레이저, 1.43:1)
     "0040",  # CGV압구정 (IMAX 레이저)
-    "0056",  # CGV강남
     "0059",  # CGV영등포 (IMAX 레이저)
     "0074",  # CGV왕십리 (IMAX 레이저)
     "0199",  # CGV천호 (IMAX 레이저)
