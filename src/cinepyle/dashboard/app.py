@@ -7,10 +7,8 @@ in-place updates without full page reloads.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import time as _time
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Query, Request
@@ -62,101 +60,53 @@ def _get_imax_theaters() -> list[dict]:
     return sorted(get_imax_theaters(), key=lambda t: t["TheaterName"])
 
 
-# ------------------------------------------------------------------
-# All-chain theater cache (for preferred theater search)
-# ------------------------------------------------------------------
-
-_theater_cache: list[dict] = []
-_theater_cache_ts: float = 0.0
-_THEATER_CACHE_TTL = 3600  # 1 hour
-
+# Chain display names (for search results)
 _CHAIN_DISPLAY = {
     "cgv": "CGV",
     "lotte": "롯데시네마",
     "megabox": "메가박스",
     "cineq": "씨네Q",
+    "indie": "독립영화관",
 }
 
 
-def _build_theater_cache() -> list[dict]:
-    """Build merged theater list across all chains (blocking I/O for Lotte/Megabox)."""
-    global _theater_cache, _theater_cache_ts
-
-    now = _time.time()
-    if _theater_cache and (now - _theater_cache_ts) < _THEATER_CACHE_TTL:
-        return _theater_cache
-
-    all_theaters: list[dict] = []
-
-    # CGV (static)
-    from cinepyle.theaters.data_cgv import data as cgv_data
-    for t in cgv_data:
-        all_theaters.append({
-            "chain_key": "cgv",
-            "theater_code": t["TheaterCode"],
-            "region_code": t.get("RegionCode", ""),
-            "name": t["TheaterName"],
-        })
-
-    # CineQ (static)
+def _get_static_theaters() -> list[dict]:
+    """Fallback: return static theater data (CGV + CineQ + indie) when DB cache is empty."""
+    theaters: list[dict] = []
+    try:
+        from cinepyle.theaters.data_cgv import data as cgv_data
+        for t in cgv_data:
+            theaters.append({
+                "chain_key": "cgv",
+                "theater_code": t["TheaterCode"],
+                "region_code": t.get("RegionCode", ""),
+                "name": t["TheaterName"],
+            })
+    except Exception:
+        pass
     try:
         from cinepyle.theaters.data_cineq import data as cineq_data
         for t in cineq_data:
-            all_theaters.append({
+            theaters.append({
                 "chain_key": "cineq",
                 "theater_code": t["TheaterCode"],
                 "region_code": "",
                 "name": t["TheaterName"],
             })
     except Exception:
-        logger.exception("Failed to load CineQ theaters")
-
-    # Lotte (API)
+        pass
     try:
-        from cinepyle.theaters import lotte
-        for t in lotte.get_theater_list():
-            all_theaters.append({
-                "chain_key": "lotte",
-                "theater_code": str(t.get("TheaterID", "")),
+        from cinepyle.theaters.data_indie import data as indie_data
+        for t in indie_data:
+            theaters.append({
+                "chain_key": "indie",
+                "theater_code": "",
                 "region_code": "",
                 "name": t["TheaterName"],
             })
     except Exception:
-        logger.exception("Failed to fetch Lotte theaters")
-
-    # Megabox (API) — lightweight: extract branch names from schedule list
-    # (avoids the per-theater API call in megabox.get_theater_list())
-    try:
-        import requests as _requests
-        from datetime import datetime as _dt
-
-        _mega_url = "https://www.megabox.co.kr/on/oh/ohc/Brch/schedulePage.do"
-        _mega_res = _requests.post(
-            _mega_url,
-            data={"masterType": "brch", "playDe": _dt.now().strftime("%Y%m%d")},
-            timeout=10,
-        ).json()
-        _mega_items = _mega_res.get("megaMap", {}).get("movieFormList", [])
-
-        _mega_seen: dict[str, str] = {}  # brchNo → brchNm
-        for s in _mega_items:
-            bid = str(s.get("brchNo", ""))
-            if bid and bid not in _mega_seen:
-                _mega_seen[bid] = s.get("brchNm", bid)
-
-        for bid, bname in _mega_seen.items():
-            all_theaters.append({
-                "chain_key": "megabox",
-                "theater_code": bid,
-                "region_code": "",
-                "name": f"{bname} 메가박스",
-            })
-    except Exception:
-        logger.exception("Failed to fetch Megabox theaters")
-
-    _theater_cache = all_theaters
-    _theater_cache_ts = now
-    return all_theaters
+        pass
+    return theaters
 
 
 def _cred_exists(mgr, key: str) -> bool:
@@ -355,12 +305,17 @@ async def update_preferred_theaters(request: Request):
 
 @app.get("/api/theaters/search", response_class=HTMLResponse)
 async def search_theaters(request: Request, q: str = Query("")):
-    """HTMX endpoint: search theaters across all chains."""
+    """HTMX endpoint: search theaters across all chains (from DB cache)."""
     if len(q.strip()) < 1:
         return HTMLResponse("")
 
     query = q.strip().lower()
-    all_theaters = await asyncio.to_thread(_build_theater_cache)
+    mgr = _get_mgr()
+    all_theaters = mgr.get_cached_theater_list()
+
+    # Fallback to static data if DB cache is empty (first run before sync)
+    if not all_theaters:
+        all_theaters = _get_static_theaters()
 
     matches = [t for t in all_theaters if query in t["name"].lower()][:20]
 

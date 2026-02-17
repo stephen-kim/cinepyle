@@ -163,6 +163,30 @@ class SettingsManager:
                 pass
         return []
 
+    # ------------------------------------------------------------------
+    # Theater list cache (daily sync)
+    # ------------------------------------------------------------------
+
+    async def sync_theater_list(self, theaters: list[dict]) -> None:
+        """Persist the full theater list to DB."""
+        await self.set(
+            "cached_theater_list",
+            json.dumps(theaters, ensure_ascii=False),
+        )
+
+    def get_cached_theater_list(self) -> list[dict]:
+        """Return the cached theater list from DB.
+
+        Each dict has keys: chain_key, theater_code, region_code, name.
+        """
+        raw = self.get("cached_theater_list", "")
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+        return []
+
     async def close(self) -> None:
         await self.store.close()
         SettingsManager._instance = None
