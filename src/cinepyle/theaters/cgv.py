@@ -9,8 +9,14 @@ with self-healing extraction via Claude API.
 import logging
 import math
 
-from cinepyle.config import ANTHROPIC_API_KEY, HEALING_DB_PATH
+from cinepyle.config import (
+    ANTHROPIC_API_KEY,
+    GEMINI_API_KEY,
+    HEALING_DB_PATH,
+    OPENAI_API_KEY,
+)
 from cinepyle.healing.engine import HealingEngine
+from cinepyle.healing.llm import resolve_llm_config
 from cinepyle.healing.strategy import ExtractionTask
 from cinepyle.scrapers.browser import get_page
 from cinepyle.theaters.data_cgv import data
@@ -27,7 +33,10 @@ _engine: HealingEngine | None = None
 def _get_engine() -> HealingEngine:
     global _engine
     if _engine is None:
-        _engine = HealingEngine(ANTHROPIC_API_KEY, HEALING_DB_PATH)
+        _engine = HealingEngine(
+            resolve_llm_config(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY),
+            HEALING_DB_PATH,
+        )
     return _engine
 
 

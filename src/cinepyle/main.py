@@ -4,7 +4,7 @@ import logging
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from cinepyle.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from cinepyle.bot.booking import build_booking_handlers
 from cinepyle.bot.handlers import (
     help_command,
     location_handler,
@@ -12,6 +12,7 @@ from cinepyle.bot.handlers import (
     ranking_command,
     start_command,
 )
+from cinepyle.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
 from cinepyle.scrapers.browser import close_browser
@@ -38,6 +39,12 @@ def main() -> None:
         .build()
     )
 
+    # NLP booking handlers (returns [/book, callback, text_handler])
+    booking_handlers = build_booking_handlers()
+
+    # /book command (must be before generic text handler)
+    app.add_handler(booking_handlers[0])
+
     # Command handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
@@ -46,6 +53,12 @@ def main() -> None:
 
     # Location message handler
     app.add_handler(MessageHandler(filters.LOCATION, location_handler))
+
+    # Payment callback handler
+    app.add_handler(booking_handlers[1])
+
+    # NLP text catch-all (MUST be last — catches free-text booking intents)
+    app.add_handler(booking_handlers[2])
 
     # Scheduled jobs
     job_queue = app.job_queue

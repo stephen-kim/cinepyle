@@ -3,7 +3,7 @@
 import logging
 import math
 
-from cinepyle.theaters import cgv, lotte, megabox
+from cinepyle.theaters import cgv, cineq, lotte, megabox
 from cinepyle.theaters.data_indie import data as indie_theaters
 
 logger = logging.getLogger(__name__)
@@ -88,12 +88,31 @@ def find_nearest_theaters(
     except Exception:
         logger.exception("Failed to load MegaBox theaters")
 
-    # Indie / CineQ theaters (static data)
+    # CineQ (static data)
+    try:
+        for t in cineq.get_theater_list():
+            dist = _distance(
+                latitude, longitude, float(t["Latitude"]), float(t["Longitude"])
+            )
+            all_theaters.append(
+                (
+                    dist,
+                    {
+                        "TheaterName": t["TheaterName"],
+                        "Latitude": t["Latitude"],
+                        "Longitude": t["Longitude"],
+                        "Chain": "씨네Q",
+                    },
+                )
+            )
+    except Exception:
+        logger.exception("Failed to load CineQ theaters")
+
+    # Indie theaters (static data)
     for t in indie_theaters:
         dist = _distance(
             latitude, longitude, float(t["Latitude"]), float(t["Longitude"])
         )
-        chain_label = "씨네Q" if t.get("Type") == "cineq" else "독립영화관"
         all_theaters.append(
             (
                 dist,
@@ -101,7 +120,7 @@ def find_nearest_theaters(
                     "TheaterName": t["TheaterName"],
                     "Latitude": t["Latitude"],
                     "Longitude": t["Longitude"],
-                    "Chain": chain_label,
+                    "Chain": "독립영화관",
                 },
             )
         )

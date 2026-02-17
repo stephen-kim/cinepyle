@@ -16,7 +16,7 @@ from typing import Any
 from playwright.async_api import Page
 
 from cinepyle.healing.html_trimmer import trim_html
-from cinepyle.healing.llm import generate_extraction_strategy
+from cinepyle.healing.llm import LLMConfig, generate_extraction_strategy
 from cinepyle.healing.store import StrategyStore
 from cinepyle.healing.strategy import ExtractionStrategy, ExtractionTask
 
@@ -29,8 +29,8 @@ LLM_COOLDOWN_SECONDS = 600  # 10 minutes
 class HealingEngine:
     """Orchestrates self-healing extraction: cache → hardcoded → LLM."""
 
-    def __init__(self, api_key: str, db_path: str = "data/strategies.db") -> None:
-        self.api_key = api_key
+    def __init__(self, llm_config: LLMConfig | None, db_path: str = "data/strategies.db") -> None:
+        self.llm_config = llm_config
         self.store = StrategyStore(db_path)
         self._llm_cooldowns: dict[str, datetime] = {}
 
@@ -75,8 +75,8 @@ class HealingEngine:
             logger.warning("Hardcoded strategy failed for %s", task.task_id)
 
         # Step 3: Try LLM generation
-        if not self.api_key:
-            logger.debug("No API key, skipping LLM for %s", task.task_id)
+        if not self.llm_config:
+            logger.debug("No LLM configured, skipping for %s", task.task_id)
             return None
 
         if self._is_on_cooldown(task.task_id):
@@ -88,7 +88,7 @@ class HealingEngine:
 
         failed_js = cached.js_code if cached else hardcoded_js
         new_js = await generate_extraction_strategy(
-            self.api_key,
+            self.llm_config,
             task,
             trimmed,
             failed_js=failed_js,

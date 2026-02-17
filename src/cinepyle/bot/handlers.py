@@ -19,7 +19,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "사용 가능한 명령어:\n"
         "/ranking - 오늘의 박스오피스 순위\n"
         "/nearby - 근처 영화관 찾기\n"
-        "/help - 도움말"
+        "/book - 영화 예매\n"
+        "/help - 도움말\n\n"
+        "💬 자연어로도 예매할 수 있어요!\n"
+        "예: \"CGV 용산에서 캡틴 아메리카 7시 예매해줘\""
     )
     await update.message.reply_text(text)
 
@@ -31,7 +34,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📋 명령어:\n"
         "/ranking - 일일 박스오피스 순위 (영화진흥위원회)\n"
         "/nearby - 근처 영화관 찾기 (위치 전송 필요)\n"
+        "/book - 영화 예매 (CGV, 롯데시네마, 메가박스, 씨네Q)\n"
         "/help - 이 도움말 표시\n\n"
+        "💬 자연어 예매:\n"
+        "명령어 없이 자유롭게 말씀하셔도 됩니다.\n"
+        "예: \"메가박스 코엑스에서 영화 보고 싶어\"\n"
+        "예: \"CGV 용산 캡틴 아메리카 7시 예매\"\n\n"
         "🔔 자동 알림:\n"
         "- 새로운 영화가 박스오피스에 진입하면 알림 (Watcha 예상 별점 포함)\n"
         "- CGV용산아이파크몰 IMAX 상영 개시 알림"
