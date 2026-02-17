@@ -30,6 +30,7 @@ from cinepyle.dashboard.settings_manager import SettingsManager
 from cinepyle.notifications.daily_digest import daily_digest_job
 from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
+from cinepyle.notifications.theater_sync import load_seed_theaters, sync_theaters_job
 from cinepyle.scrapers.browser import close_browser
 
 logging.basicConfig(
@@ -101,6 +102,25 @@ async def async_main() -> None:
         data=TELEGRAM_CHAT_ID,
         name="daily_digest",
     )
+
+    # Theater list sync — daily at 4 AM + once on startup if cache empty
+    job_queue.run_daily(
+        sync_theaters_job,
+        time=dt_time(hour=4, minute=0, tzinfo=KST),
+        data=TELEGRAM_CHAT_ID,
+        name="theater_sync",
+    )
+    if not settings.get_cached_theater_list():
+        # Load bundled seed data immediately for first-run search
+        seed = load_seed_theaters()
+        if seed:
+            await settings.sync_theater_list(seed)
+            logger.info("Loaded %d seed theaters into DB", len(seed))
+        # Then schedule a full sync (including API data) shortly after
+        job_queue.run_once(
+            sync_theaters_job, when=30, data=TELEGRAM_CHAT_ID,
+            name="theater_sync_init",
+        )
 
     # 5. Run Telegram bot + FastAPI dashboard concurrently
     config = uvicorn.Config(
