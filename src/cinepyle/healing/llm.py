@@ -42,14 +42,27 @@ def resolve_llm_config(
     anthropic_key: str = "",
     openai_key: str = "",
     gemini_key: str = "",
+    priority: list[str] | None = None,
 ) -> LLMConfig | None:
-    """Pick the first available provider. Returns None if no key is set."""
-    if anthropic_key:
-        return LLMConfig(provider="anthropic", api_key=anthropic_key)
-    if openai_key:
-        return LLMConfig(provider="openai", api_key=openai_key)
-    if gemini_key:
-        return LLMConfig(provider="gemini", api_key=gemini_key)
+    """Pick the first available provider based on priority order.
+
+    Args:
+        priority: Provider order, e.g. ["anthropic", "openai", "gemini"].
+                  Defaults to Anthropic > OpenAI > Gemini.
+    """
+    if priority is None:
+        priority = ["anthropic", "openai", "gemini"]
+
+    key_map = {
+        "anthropic": anthropic_key,
+        "openai": openai_key,
+        "gemini": gemini_key,
+    }
+
+    for provider in priority:
+        key = key_map.get(provider, "")
+        if key:
+            return LLMConfig(provider=provider, api_key=key)
     return None
 
 

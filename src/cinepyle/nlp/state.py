@@ -38,6 +38,14 @@ class BookingState:
     seats: list[str] | None = None  # ["F7", "F8"]
     payment_method: str | None = None  # "신용카드"
 
+    # User location (from Telegram location message)
+    user_latitude: float | None = None
+    user_longitude: float | None = None
+
+    # Theater location (resolved from theater data)
+    theater_latitude: float | None = None
+    theater_longitude: float | None = None
+
     # Available options fetched from APIs
     available_theaters: list[dict] = field(default_factory=list)
     available_movies: dict = field(default_factory=dict)
@@ -52,6 +60,10 @@ class BookingState:
     def summary_for_llm(self) -> str:
         """Compact state summary injected into system prompt."""
         parts = []
+        if self.user_latitude is not None and self.user_longitude is not None:
+            parts.append(
+                f"사용자 위치: ({self.user_latitude:.6f}, {self.user_longitude:.6f})"
+            )
         if self.chain:
             chain_names = {
                 "cgv": "CGV",
@@ -62,12 +74,12 @@ class BookingState:
             parts.append(f"체인: {chain_names.get(self.chain, self.chain)}")
         if self.theater_name:
             parts.append(f"극장: {self.theater_name}")
+        if self.play_date:
+            parts.append(f"날짜: {self.play_date}")
         if self.movie_name:
             parts.append(f"영화: {self.movie_name}")
         if self.showtime:
             parts.append(f"시간: {self.showtime}")
-        if self.play_date:
-            parts.append(f"날짜: {self.play_date}")
         if self.seats:
             parts.append(f"좌석: {', '.join(self.seats)}")
         if self.payment_method:
@@ -96,12 +108,18 @@ class BookingState:
             self.messages = self.messages[-max_history:]
 
     def reset(self) -> None:
-        """Reset to idle state."""
+        """Reset to idle state.
+
+        Note: user_latitude/user_longitude are preserved across resets
+        so the user doesn't need to re-send their location.
+        """
         self.phase = BookingPhase.IDLE
         self.chain = None
         self.theater_name = None
         self.theater_id = None
         self.theater_region = None
+        self.theater_latitude = None
+        self.theater_longitude = None
         self.movie_name = None
         self.movie_id = None
         self.showtime = None

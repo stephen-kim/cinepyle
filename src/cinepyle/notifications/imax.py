@@ -1,14 +1,28 @@
-"""IMAX screening notification service."""
+"""IMAX screening notification service.
+
+Checks CGV용산아이파크몰 for new IMAX screenings and sends
+Telegram notifications. Previously-notified titles are persisted
+in SQLite so restarts don't cause duplicate alerts.
+"""
 
 import logging
 
 from telegram.ext import ContextTypes
 
+from cinepyle.config import NOTIFICATION_DB_PATH
+from cinepyle.notifications.store import NotificationStore
 from cinepyle.scrapers.cgv import check_imax_screening
 
 logger = logging.getLogger(__name__)
 
-_notified_titles: set[str] = set()
+_store: NotificationStore | None = None
+
+
+def _get_store() -> NotificationStore:
+    global _store
+    if _store is None:
+        _store = NotificationStore(NOTIFICATION_DB_PATH)
+    return _store
 
 
 async def check_imax_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -25,11 +39,12 @@ async def check_imax_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     title, booking_url = result
+    store = _get_store()
 
-    if title in _notified_titles:
+    if await store.is_imax_notified(title):
         return
 
-    _notified_titles.add(title)
+    await store.add_imax_title(title)
 
     text = f"🎬 CGV용산아이파크몰에서 [{title}] IMAX 상영이 시작되었습니다!"
     await context.bot.send_message(chat_id=chat_id, text=text)

@@ -1,35 +1,25 @@
-# cinePyle
+# Cinepyle
 
-한국 영화 텔레그램 봇 — 박스오피스, 근처 영화관, 자연어 예매, IMAX/신작 알림
+한국 영화 텔레그램 알림봇 - 박스오피스 순위, 신작 알림, IMAX 상영 알림, 근처 영화관 찾기, 자연어 예매
 
 ## 기능
 
-### 명령어
-- `/ranking` — 일일 박스오피스 순위 (영화진흥위원회 KOFIC)
-- `/nearby` — 근처 영화관 찾기 (CGV, 롯데시네마, 메가박스, 씨네Q, 독립영화관)
-- `/book` — 영화 예매
-
-### 자연어 예매
-명령어 없이 자유롭게 말해도 됩니다:
-```
-"CGV 용산에서 캡틴 아메리카 7시 예매해줘"
-"메가박스 코엑스에서 영화 보고 싶어"
-"오늘 저녁 롯데시네마 볼만한 거 있어?"
-```
-LLM이 의도를 파악하고, 체인/극장/영화/시간을 수집한 후 Playwright로 자동 예매합니다.
-지원 체인: **CGV** (CAPTCHA 처리 포함), **롯데시네마**, **메가박스**, **씨네Q**
-
-### 자동 알림
-- 신작 영화 박스오피스 진입 알림 (Watcha Pedia 예상 별점 포함)
-- CGV 용산아이파크몰 IMAX 상영 개시 알림
-
-### AI 자가 치유 스크래퍼
-CGV 등 CSR 사이트의 구조가 변경되면 LLM이 자동으로 새로운 추출 전략을 생성합니다.
-3단계 폴백: 캐시된 전략 → 하드코딩 JS → LLM 생성
+- `/ranking` - 일일 박스오피스 순위 (영화진흥위원회 KOFIC)
+- `/nearby` - 근처 영화관 찾기 (CGV, 롯데시네마, 메가박스, 씨네Q, 독립영화관)
+- `/book` - 자연어 영화 예매 (LLM 기반, CGV/롯데시네마/메가박스/씨네Q)
+- 매일 아침 9시 영화 다이제스트 (개봉 예정 + 박스오피스 + Watcha 기대평 + 씨네21/네이버 링크)
+- 신작 영화 자동 알림 (박스오피스 + KOFIC 영화목록 API, Watcha Pedia 예상 별점 포함)
+- CGV 용산아이파크몰 IMAX 상영 개시 자동 알림
+- 웹 대시보드 (`localhost:3847`) — 봇 설정을 런타임에 변경 가능
+  - 알림 주기 조정 (IMAX / 신작 체크 간격)
+  - 선호 영화관 선택
+  - LLM 우선순위 드래그 정렬
+  - 크리덴셜 / API 키 관리 (암호화 저장)
 
 ## 설치 및 실행
 
 ### 요구사항
+
 - Python >= 3.14
 - [uv](https://docs.astral.sh/uv/)
 
@@ -40,21 +30,25 @@ cp .env.example .env
 # .env 파일에 API 키 입력
 ```
 
-| 환경변수 | 설명 | 필수 |
-|---------|------|:----:|
-| `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 | O |
-| `TELEGRAM_CHAT_ID` | 알림 받을 채팅방 ID | O |
-| `KOFIC_API_KEY` | [영화진흥위원회 API 키](https://www.kobis.or.kr/kobisopenapi/homepg/main/main.do) | O |
-| `WATCHA_EMAIL` | Watcha Pedia 계정 이메일 | O |
-| `WATCHA_PASSWORD` | Watcha Pedia 계정 비밀번호 | O |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API 키 | * |
-| `OPENAI_API_KEY` | OpenAI API 키 | * |
-| `GEMINI_API_KEY` | Google Gemini API 키 | * |
-| `CGV_ID` / `CGV_PASSWORD` | CGV 로그인 | |
-| `LOTTECINEMA_ID` / `LOTTECINEMA_PASSWORD` | 롯데시네마 로그인 | |
-| `MEGABOX_ID` / `MEGABOX_PASSWORD` | 메가박스 로그인 | |
-
-\* LLM API 키는 3개 중 하나만 있으면 됩니다 (우선순위: Anthropic > OpenAI > Gemini)
+| 환경변수 | 설명 |
+|---------|------|
+| `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 |
+| `TELEGRAM_CHAT_ID` | 알림 받을 텔레그램 채팅방 ID |
+| `KOBIS_API_KEY` | [영화진흥위원회 API 키](https://www.kobis.or.kr/kobisopenapi/homepg/main/main.do) |
+| `WATCHA_EMAIL` | Watcha Pedia 계정 이메일 |
+| `WATCHA_PASSWORD` | Watcha Pedia 계정 비밀번호 |
+| `CGV_ID` | CGV 계정 ID (예매용, 선택) |
+| `CGV_PASSWORD` | CGV 계정 비밀번호 (예매용, 선택) |
+| `LOTTECINEMA_ID` | 롯데시네마 계정 ID (예매용, 선택) |
+| `LOTTECINEMA_PASSWORD` | 롯데시네마 계정 비밀번호 (예매용, 선택) |
+| `MEGABOX_ID` | 메가박스 계정 ID (예매용, 선택) |
+| `MEGABOX_PASSWORD` | 메가박스 계정 비밀번호 (예매용, 선택) |
+| `CINEQ_ID` | 씨네Q 계정 ID (예매용, 선택) |
+| `CINEQ_PASSWORD` | 씨네Q 계정 비밀번호 (예매용, 선택) |
+| `NAVER_MAPS_CLIENT_ID` | 네이버 지도 API Client ID (길찾기용, 선택) |
+| `NAVER_MAPS_CLIENT_SECRET` | 네이버 지도 API Client Secret (길찾기용, 선택) |
+| `DASHBOARD_PORT` | 웹 대시보드 포트 (기본 `3847`, 선택) |
+| `SETTINGS_ENCRYPTION_KEY` | 크리덴셜 암호화 키 (미설정 시 자동 생성, 선택) |
 
 ### 로컬 실행
 
@@ -62,58 +56,22 @@ cp .env.example .env
 uv sync
 uv run playwright install chromium
 uv run cinepyle
+# 대시보드: http://localhost:3847
 ```
 
 ### Docker
 
 ```bash
 docker compose up --build
-```
-
-## 아키텍처
-
-```
-src/cinepyle/
-├── main.py                 # 봇 엔트리포인트
-├── config.py               # .env 기반 설정
-├── bot/
-│   ├── handlers.py         # /ranking, /nearby, /help 핸들러
-│   └── booking.py          # LLM 자연어 예매 핸들러
-├── nlp/
-│   ├── agent.py            # BookingAgent — LLM 오케스트레이션
-│   ├── state.py            # 예매 상태 관리
-│   ├── prompts.py          # 시스템 프롬프트 + 도구 스키마
-│   └── tools.py            # 도구 실행 (극장 검색, 스케줄 조회)
-├── booking/
-│   ├── base.py             # BookingSession ABC
-│   ├── cgv.py              # CGV 예매 (CAPTCHA 처리)
-│   ├── lotte.py            # 롯데시네마 예매
-│   ├── megabox.py          # 메가박스 예매
-│   └── cineq.py            # 씨네Q 예매
-├── healing/
-│   ├── llm.py              # 멀티 프로바이더 LLM (chat + tool calling)
-│   ├── engine.py           # 자가 치유 엔진 (3단계 폴백)
-│   └── store.py            # SQLite 전략 캐시
-├── scrapers/
-│   ├── browser.py          # Playwright 브라우저 관리
-│   ├── cgv.py              # CGV 스크래퍼 (Playwright + 자가 치유)
-│   ├── watcha.py           # Watcha Pedia 스크래퍼
-│   └── boxoffice.py        # KOFIC 박스오피스 API
-├── theaters/
-│   ├── finder.py           # 근처 영화관 통합 검색
-│   ├── cgv.py / lotte.py / megabox.py / cineq.py
-│   └── data_*.py           # 극장 정적 데이터
-└── notifications/
-    ├── imax.py             # IMAX 상영 알림
-    └── new_movie.py        # 신작 알림
+# 대시보드: http://localhost:3847
 ```
 
 ## 기술 스택
 
-- **Python 3.14** + [uv](https://docs.astral.sh/uv/)
-- **python-telegram-bot** — async Telegram Bot API
-- **Playwright** — 헤드리스 브라우저 (CGV CSR, Watcha 로그인, 예매 자동화)
-- **Anthropic / OpenAI / Gemini** — LLM tool calling (자연어 예매 + 자가 치유)
-- **requests / BeautifulSoup4** — API 호출 및 HTML 파싱
-- **aiosqlite** — 추출 전략 캐시
-- **Docker / GitHub Actions** — CI/CD, ghcr.io 자동 배포
+- Python 3.14
+- python-telegram-bot (async)
+- Playwright (헤드리스 브라우저 스크래핑 - CGV, Watcha 등 CSR 사이트)
+- requests / BeautifulSoup4 (API 호출)
+- FastAPI + HTMX + Tailwind CSS (웹 대시보드, 빌드 불필요)
+- python-dotenv (환경변수)
+- Docker / GitHub Actions (CI/CD)

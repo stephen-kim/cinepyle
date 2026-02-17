@@ -41,12 +41,16 @@ def filter_nearest(
     return [theater for _, theater in with_distance[:n]]
 
 
-def get_movie_schedule(theater_code: str) -> dict:
-    """Fetch today's movie schedule for a CineQ theater.
+def get_movie_schedule(theater_code: str, play_date: str | None = None) -> dict:
+    """Fetch movie schedule for a CineQ theater.
+
+    Args:
+        theater_code: CineQ theater code (e.g. "Q01")
+        play_date: Date string in YYYYMMDD format. Defaults to today.
 
     Returns a dict: {movie_title: {"Name": str, "Schedules": [{"StartTime": str, "RemainingSeat": str}]}}
     """
-    today = datetime.now().strftime("%Y%m%d")
+    today = play_date or datetime.now().strftime("%Y%m%d")
     response = requests.post(
         SCHEDULE_URL,
         data={"TheaterCode": theater_code, "PlayDate": today},

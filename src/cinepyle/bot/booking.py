@@ -43,6 +43,9 @@ _BOOKING_KEYWORDS = [
     "영화보",
     "볼만한",
     "영화관",
+    "근처",
+    "가까운",
+    "주변",
 ]
 
 
@@ -57,13 +60,25 @@ def _get_or_create_agent(
 ) -> BookingAgent | None:
     """Get existing agent from user_data or create a new one.
 
-    Returns None if no LLM API key is configured.
+    Reads LLM credentials and priority from SettingsManager (dashboard),
+    falling back to .env values. Returns None if no LLM API key is configured.
     """
     agent = context.user_data.get("booking_agent")
     if agent is not None:
         return agent
 
-    config = resolve_llm_config(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)
+    try:
+        from cinepyle.dashboard.settings_manager import SettingsManager
+        mgr = SettingsManager.get_instance()
+        anthropic_key = mgr.get("credential:anthropic_api_key") or ANTHROPIC_API_KEY
+        openai_key = mgr.get("credential:openai_api_key") or OPENAI_API_KEY
+        gemini_key = mgr.get("credential:gemini_api_key") or GEMINI_API_KEY
+        priority = mgr.get_llm_priority()
+    except (RuntimeError, ImportError):
+        anthropic_key, openai_key, gemini_key = ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY
+        priority = None
+
+    config = resolve_llm_config(anthropic_key, openai_key, gemini_key, priority=priority)
     if not config:
         return None
 
@@ -144,6 +159,57 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ------------------------------------------------------------------
+# Handler: location messages
+# ------------------------------------------------------------------
+
+
+async def location_booking_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle location messages for the booking flow.
+
+    When a user sends their location:
+    1. Store it in the BookingAgent state
+    2. If no active session, start a new one with nearby theater search
+    3. If active session, update location and continue
+
+    Returns True if handled, False if should fall through to default location handler.
+    """
+    location = update.message.location
+    if location is None:
+        return
+
+    lat = location.latitude
+    lng = location.longitude
+
+    agent: BookingAgent | None = context.user_data.get("booking_agent")
+
+    if agent:
+        # Store location in existing agent
+        agent.state.user_latitude = lat
+        agent.state.user_longitude = lng
+
+        # If actively gathering info, trigger nearby search
+        if agent.state.phase in (BookingPhase.IDLE, BookingPhase.GATHERING_INFO):
+            await agent.handle_message(
+                "위치를 보냈어요. 근처 영화관 알려주세요.", update, context
+            )
+            return
+
+    # No active agent — create one and start location-based flow
+    agent = _get_or_create_agent(context)
+    if agent:
+        agent.state.user_latitude = lat
+        agent.state.user_longitude = lng
+        await agent.handle_message(
+            "위치를 보냈어요. 근처 영화관에서 뭐 하는지 알려주세요.", update, context
+        )
+        return
+
+    # No LLM available — fall through (handled by default location_handler)
+
+
+# ------------------------------------------------------------------
 # Handler: payment callback buttons
 # ------------------------------------------------------------------
 
@@ -180,11 +246,13 @@ def build_booking_handlers() -> list:
 
     Returns handlers in the order they should be registered:
     1. /book command
-    2. Payment callback
-    3. Text catch-all (should be registered LAST)
+    2. Location handler (for booking flow)
+    3. Payment callback
+    4. Text catch-all (should be registered LAST)
     """
     return [
         CommandHandler("book", book_command),
+        MessageHandler(filters.LOCATION, location_booking_handler),
         CallbackQueryHandler(callback_handler, pattern=r"^nlpay:"),
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler),
     ]

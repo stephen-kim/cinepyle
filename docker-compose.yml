@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     volumes:
       - cinepyle-data:/app/data
+    ports:
+      - "3847:3847"
 
 volumes:
   cinepyle-data:

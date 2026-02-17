@@ -14,12 +14,15 @@ from cinepyle.booking.base import BookingSession
 from cinepyle.config import (
     CGV_ID,
     CGV_PASSWORD,
+    CINEQ_ID,
+    CINEQ_PASSWORD,
     LOTTECINEMA_ID,
     LOTTECINEMA_PASSWORD,
     MEGABOX_ID,
     MEGABOX_PASSWORD,
 )
 from cinepyle.healing.llm import LLMConfig, chat_completion
+from cinepyle.navigation import format_directions_message
 from cinepyle.nlp.prompts import BOOKING_SYSTEM_PROMPT, BOOKING_TOOLS
 from cinepyle.nlp.state import BookingPhase, BookingState
 from cinepyle.nlp.tools import execute_tool
@@ -27,13 +30,25 @@ from cinepyle.scrapers.browser import get_page
 
 logger = logging.getLogger(__name__)
 
-# Chain credentials
-_CHAIN_CREDS: dict[str, tuple[str, str]] = {
+# Chain credentials fallback (from .env)
+_CHAIN_CREDS_FALLBACK: dict[str, tuple[str, str]] = {
     "cgv": (CGV_ID, CGV_PASSWORD),
     "lotte": (LOTTECINEMA_ID, LOTTECINEMA_PASSWORD),
     "megabox": (MEGABOX_ID, MEGABOX_PASSWORD),
-    "cineq": ("", ""),  # CineQ may not require login
+    "cineq": (CINEQ_ID, CINEQ_PASSWORD),
 }
+
+
+def _get_chain_creds(chain_key: str) -> tuple[str, str]:
+    """Get chain credentials from SettingsManager, falling back to .env."""
+    try:
+        from cinepyle.dashboard.settings_manager import SettingsManager
+        mgr = SettingsManager.get_instance()
+        uid = mgr.get(f"credential:{chain_key}_id") or _CHAIN_CREDS_FALLBACK.get(chain_key, ("", ""))[0]
+        pw = mgr.get(f"credential:{chain_key}_password") or _CHAIN_CREDS_FALLBACK.get(chain_key, ("", ""))[1]
+        return (uid, pw)
+    except (RuntimeError, ImportError):
+        return _CHAIN_CREDS_FALLBACK.get(chain_key, ("", ""))
 
 # Maximum tool-call rounds per user message
 MAX_TOOL_ROUNDS = 5
@@ -45,7 +60,7 @@ SESSION_TIMEOUT = 300
 async def _create_session(chain_key: str) -> BookingSession:
     """Create the appropriate BookingSession for a chain."""
     page = await get_page()
-    uid, pw = _CHAIN_CREDS.get(chain_key, ("", ""))
+    uid, pw = _get_chain_creds(chain_key)
 
     if chain_key == "cgv":
         from cinepyle.booking.cgv import CGVBookingSession
@@ -93,8 +108,15 @@ class BookingAgent:
         self.state.add_message("user", user_text)
 
         # Build system prompt with current state
+        now = datetime.now()
+        _DAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
+        today_str = (
+            f"{now.strftime('%Y년 %m월 %d일')} "
+            f"({_DAYS_KO[now.weekday()]}요일)"
+        )
         system = BOOKING_SYSTEM_PROMPT.format(
-            state_summary=self.state.summary_for_llm()
+            state_summary=self.state.summary_for_llm(),
+            today=today_str,
         )
 
         # Agent loop: LLM may emit multiple sequential tool calls
@@ -437,21 +459,24 @@ class BookingAgent:
     async def _show_confirmation(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Send booking confirmation screenshot and reset."""
+        """Send booking confirmation screenshot, directions link, and reset."""
         session: BookingSession = context.user_data.get("booking_session")
         chat_id = self._get_chat_id(update)
+
+        # Build confirmation caption
+        caption = (
+            f"✅ 예매 완료!\n"
+            f"🎬 {self.state.movie_name or ''}\n"
+            f"🕐 {self.state.showtime or ''}\n"
+            f"💺 {', '.join(self.state.seats or [])}"
+        )
 
         try:
             screenshot = await session.get_confirmation_screenshot()
             await context.bot.send_photo(
                 chat_id=chat_id,
                 photo=io.BytesIO(screenshot),
-                caption=(
-                    f"✅ 예매 완료!\n"
-                    f"🎬 {self.state.movie_name or ''}\n"
-                    f"🕐 {self.state.showtime or ''}\n"
-                    f"💺 {', '.join(self.state.seats or [])}"
-                ),
+                caption=caption,
             )
         except Exception:
             logger.exception("Failed to get confirmation")
@@ -460,8 +485,38 @@ class BookingAgent:
                 text="✅ 예매가 완료된 것으로 보입니다. 해당 사이트에서 직접 확인해주세요.",
             )
 
+        # Send Naver Directions link if we have both user and theater locations
+        await self._send_directions(chat_id, context)
+
         self.state.phase = BookingPhase.COMPLETED
         await self._cleanup_session(context)
+
+    async def _send_directions(
+        self, chat_id: int, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Send Naver Maps directions link after booking confirmation."""
+        state = self.state
+        if (
+            state.user_latitude is not None
+            and state.user_longitude is not None
+            and state.theater_latitude is not None
+            and state.theater_longitude is not None
+            and state.theater_name
+        ):
+            try:
+                directions_msg = format_directions_message(
+                    start_lat=state.user_latitude,
+                    start_lng=state.user_longitude,
+                    dest_lat=state.theater_latitude,
+                    dest_lng=state.theater_longitude,
+                    dest_name=state.theater_name,
+                )
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=directions_msg,
+                )
+            except Exception:
+                logger.exception("Failed to send directions link")
 
     # ------------------------------------------------------------------
     # Cancel & cleanup
