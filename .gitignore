@@ -21,5 +21,8 @@ uv.lock
 # Data
 data/
 
+# Claude
+.claude/
+
 # OS
 .DS_Store
