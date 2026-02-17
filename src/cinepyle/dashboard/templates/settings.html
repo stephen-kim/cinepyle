@@ -104,11 +104,10 @@
     </div>
 
     {# Hidden form for saving #}
-    <form hx-post="/settings/preferred-theaters" hx-target="#preferred-feedback" hx-swap="innerHTML">
+    <form id="preferred-theaters-form" hx-post="/settings/preferred-theaters" hx-target="#preferred-feedback" hx-swap="innerHTML">
         <input type="hidden" name="preferred_theaters_json" id="preferred-theaters-json" value="">
         <div class="flex items-center gap-3">
-            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium"
-                    onclick="syncPreferredJson()">저장</button>
+            <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">저장</button>
             <span class="htmx-indicator text-muted-foreground text-sm">저장 중...</span>
         </div>
         <div id="preferred-feedback" class="mt-3 text-sm"></div>
@@ -156,6 +155,11 @@ function syncPreferredJson() {
     }));
     document.getElementById('preferred-theaters-json').value = JSON.stringify(arr);
 }
+
+// Sync JSON before HTMX submits the form
+document.getElementById('preferred-theaters-form').addEventListener('htmx:configRequest', function() {
+    syncPreferredJson();
+});
 </script>
 
 {# ── LLM Priority Card ── #}
@@ -164,6 +168,7 @@ function syncPreferredJson() {
     <p class="text-muted-foreground text-sm mb-4">자가 복구 및 예매 에이전트에서 사용할 LLM 제공자 우선순위를 드래그로 설정합니다.</p>
     <form hx-post="/settings/llm-priority" hx-target="#llm-feedback" hx-swap="innerHTML">
         <div id="llm-sortable" class="space-y-2 mb-4">
+            {% if llm_priority %}
             {% for provider in llm_priority %}
             <div class="flex items-center gap-3 px-4 py-3 rounded-md border border-border bg-background cursor-move"
                  data-provider="{{ provider }}">
@@ -181,6 +186,9 @@ function syncPreferredJson() {
                 <input type="hidden" name="priority" value="{{ provider }}">
             </div>
             {% endfor %}
+            {% else %}
+            <p class="text-sm text-muted-foreground py-3">API 키가 설정된 LLM이 없습니다. 아래 크리덴셜에서 API 키를 추가하세요.</p>
+            {% endif %}
         </div>
         <div class="flex items-center gap-3">
             <button type="submit" class="btn-primary px-4 py-2 rounded-md text-sm font-medium">
@@ -219,7 +227,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">Bot Token</label>
                 {% if env_creds['credential:telegram_bot_token'] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="password" name="credential:telegram_bot_token"
                        placeholder="{% if creds['credential:telegram_bot_token'] %}******{% else %}미설정{% endif %}"
@@ -230,7 +238,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">Chat ID</label>
                 {% if env_creds['credential:telegram_chat_id'] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="text" name="credential:telegram_chat_id"
                        placeholder="{% if creds['credential:telegram_chat_id'] %}******{% else %}미설정{% endif %}"
@@ -249,7 +257,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">{{ label }} ID</label>
                 {% if env_creds[id_key] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="text" name="{{ id_key }}"
                        placeholder="{% if creds[id_key] %}******{% else %}미설정{% endif %}"
@@ -260,7 +268,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">{{ label }} 비밀번호</label>
                 {% if env_creds[pw_key] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="password" name="{{ pw_key }}"
                        placeholder="{% if creds[pw_key] %}******{% else %}미설정{% endif %}"
@@ -279,7 +287,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">{{ label }}</label>
                 {% if env_creds[cred_key] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="password" name="{{ cred_key }}"
                        placeholder="{% if creds[cred_key] %}******{% else %}미설정{% endif %}"
@@ -296,7 +304,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">Watcha 이메일</label>
                 {% if env_creds['credential:watcha_email'] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="text" name="credential:watcha_email"
                        placeholder="{% if creds['credential:watcha_email'] %}******{% else %}미설정{% endif %}"
@@ -307,7 +315,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">Watcha 비밀번호</label>
                 {% if env_creds['credential:watcha_password'] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="password" name="credential:watcha_password"
                        placeholder="{% if creds['credential:watcha_password'] %}******{% else %}미설정{% endif %}"
@@ -323,7 +331,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">Client ID</label>
                 {% if env_creds['credential:naver_maps_client_id'] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="password" name="credential:naver_maps_client_id"
                        placeholder="{% if creds['credential:naver_maps_client_id'] %}******{% else %}미설정{% endif %}"
@@ -334,7 +342,7 @@ function syncPreferredJson() {
                 <label class="block text-xs text-muted-foreground mb-1">Client Secret</label>
                 {% if env_creds['credential:naver_maps_client_secret'] %}
                 <input type="text" disabled value="환경 변수로 설정됨"
-                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-60 cursor-not-allowed">
+                       class="input-field rounded-md px-3 py-2 w-full text-sm font-mono opacity-20 cursor-not-allowed">
                 {% else %}
                 <input type="password" name="credential:naver_maps_client_secret"
                        placeholder="{% if creds['credential:naver_maps_client_secret'] %}******{% else %}미설정{% endif %}"
