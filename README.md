@@ -35,6 +35,7 @@ cp .env.example .env
 
 ```bash
 uv sync
+uv run playwright install chromium
 uv run cinepyle
 ```
 
@@ -48,6 +49,7 @@ docker compose up --build
 
 - Python 3.14
 - python-telegram-bot (async)
-- requests / BeautifulSoup4 (스크래핑)
+- Playwright (헤드리스 브라우저 스크래핑 - CGV, Watcha 등 CSR 사이트)
+- requests / BeautifulSoup4 (API 호출)
 - python-dotenv (환경변수)
 - Docker / GitHub Actions (CI/CD)

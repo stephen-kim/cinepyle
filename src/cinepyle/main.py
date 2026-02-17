@@ -14,6 +14,7 @@ from cinepyle.bot.handlers import (
 )
 from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
+from cinepyle.scrapers.browser import close_browser
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -22,9 +23,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def post_shutdown(application: Application) -> None:
+    """Shut down the shared Playwright browser on bot exit."""
+    logger.info("Shutting down browser...")
+    await close_browser()
+
+
 def main() -> None:
     """Build and run the bot."""
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     # Command handlers
     app.add_handler(CommandHandler("start", start_command))

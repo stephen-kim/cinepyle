@@ -16,7 +16,7 @@ async def check_imax_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = context.job.data
 
     try:
-        result = check_imax_screening()
+        result = await check_imax_screening()
     except Exception:
         logger.exception("Failed to check IMAX screening")
         return

@@ -2,29 +2,18 @@
 
 Note: CGV migrated to a Next.js-based site in July 2025.
 The old iframeTheater.aspx endpoint no longer works.
-Schedule fetching uses the new CGV system URLs.
+Schedule fetching uses Playwright to render the CSR page.
 """
 
 import logging
 import math
-from datetime import datetime
 
-import requests
-
+from cinepyle.scrapers.browser import get_page
 from cinepyle.theaters.data_cgv import data
 
 logger = logging.getLogger(__name__)
 
-CGV_SCHEDULE_API = "https://cgv.co.kr/api/schedules"
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://cgv.co.kr/",
-}
+CGV_THEATER_BASE_URL = "https://cgv.co.kr/cnm/bzplcCgv"
 
 
 def get_theater_list() -> list[dict]:
@@ -50,50 +39,87 @@ def filter_nearest(
     return [theater for _, theater in with_distance[:n]]
 
 
-def get_movie_schedule(area_code: str, theater_code: str) -> str:
+async def get_movie_schedule(area_code: str, theater_code: str) -> str:
     """Fetch today's movie schedule for a CGV theater.
 
-    Uses the new CGV API (post-July 2025 migration).
+    Uses Playwright to render the Next.js-based theater page and
+    extract schedule information from the fully rendered DOM.
     Returns a formatted string with movie titles and showtimes.
     """
-    today = datetime.now().strftime("%Y%m%d")
+    theater_url = f"{CGV_THEATER_BASE_URL}/{area_code}{theater_code}"
 
+    page = await get_page()
     try:
-        resp = requests.get(
-            CGV_SCHEDULE_API,
-            params={"theaterCode": theater_code, "date": today},
-            headers=HEADERS,
-            timeout=10,
+        await page.goto(theater_url, wait_until="networkidle", timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        # Extract schedule from the rendered page
+        schedule = await page.evaluate(
+            """() => {
+                const movies = [];
+                // Try common schedule container selectors
+                const containers = document.querySelectorAll(
+                    '[class*="movie"], [class*="schedule"], [class*="timetable"], article, section'
+                );
+
+                // Strategy 1: Look for structured movie/time data
+                const allText = document.body.innerText;
+                const lines = allText.split('\\n').map(l => l.trim()).filter(l => l);
+
+                let currentMovie = null;
+                const timePattern = /^\\d{1,2}:\\d{2}/;
+                const result = [];
+
+                for (const line of lines) {
+                    // Skip very short lines or common UI text
+                    if (line.length < 2) continue;
+
+                    // If this line looks like a time, add it to current movie
+                    if (timePattern.test(line) && currentMovie) {
+                        currentMovie.times.push(line);
+                    }
+                    // If it's a substantial text that doesn't look like a time or number,
+                    // treat it as a potential movie title
+                    else if (line.length > 2 && !timePattern.test(line)
+                             && !line.match(/^[0-9]+$/)
+                             && !line.match(/^(관|석|층|원|명)$/)
+                             && line.length < 50) {
+                        // Check if the previous movie had times
+                        if (currentMovie && currentMovie.times.length > 0) {
+                            result.push(currentMovie);
+                        }
+                        currentMovie = { title: line, times: [] };
+                    }
+                }
+                // Don't forget the last movie
+                if (currentMovie && currentMovie.times.length > 0) {
+                    result.push(currentMovie);
+                }
+
+                return result;
+            }"""
         )
-        if resp.status_code != 200:
-            logger.warning("CGV schedule API returned %s", resp.status_code)
+
+        if not schedule:
             return (
-                "CGV 상영시간표를 가져올 수 없습니다.\n"
-                f"직접 확인: https://cgv.co.kr/cnm/bzplcCgv/{area_code}{theater_code}"
+                "상영 중인 영화가 없거나 스케줄을 파싱할 수 없습니다.\n"
+                f"직접 확인: {theater_url}"
             )
 
-        data = resp.json()
         lines = []
-
-        for movie in data.get("movies", data.get("schedules", [])):
-            title = movie.get("movieName", movie.get("title", ""))
+        for movie in schedule:
             lines.append("============================")
-            lines.append(f"* {title}")
-            lines.append(" 상영시간   빈좌석")
+            lines.append(f"* {movie['title']}")
+            for time_info in movie["times"]:
+                lines.append(f"  {time_info}")
 
-            halls = movie.get("halls", movie.get("screenings", []))
-            for hall in halls:
-                times = hall.get("times", hall.get("showtimes", []))
-                for t in times:
-                    start = t.get("startTime", t.get("time", ""))
-                    seats = t.get("remainSeats", t.get("seats", ""))
-                    lines.append(f"  {start}      {seats}")
-
-        return "\n".join(lines) if lines else "상영 중인 영화가 없습니다."
+        return "\n".join(lines)
 
     except Exception:
-        logger.exception("Failed to fetch CGV schedule")
+        logger.exception("Failed to fetch CGV schedule via Playwright")
         return (
             "CGV 상영시간표를 가져올 수 없습니다.\n"
-            f"직접 확인: https://cgv.co.kr/cnm/bzplcCgv/{area_code}{theater_code}"
+            f"직접 확인: {theater_url}"
         )
+    finally:
+        await page.close()

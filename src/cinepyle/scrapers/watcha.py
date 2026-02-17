@@ -1,138 +1,156 @@
-"""Watcha Pedia expected rating scraper.
+"""Watcha Pedia expected rating scraper using Playwright.
 
 Watcha Pedia does not provide a public API for predicted ratings.
-This module logs in via the web interface and scrapes the expected
+This module logs in via a headless browser and scrapes the expected
 rating (예상 별점) for a given movie title.
 """
 
 import logging
-import re
 
-import requests
-from bs4 import BeautifulSoup
+from cinepyle.scrapers.browser import get_page
 
 logger = logging.getLogger(__name__)
 
 WATCHA_BASE_URL = "https://pedia.watcha.com"
-WATCHA_API_URL = "https://api-pedia.watcha.com"
-
-WATCHA_HEADERS = {
-    "x-watcha-client": "watcha-WebApp",
-    "x-watcha-client-language": "ko",
-    "x-watcha-client-region": "KR",
-    "x-watcha-client-version": "2.1.0",
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-}
+WATCHA_LOGIN_URL = f"{WATCHA_BASE_URL}/ko-KR/sign_in"
+WATCHA_SEARCH_URL = f"{WATCHA_BASE_URL}/ko-KR/search"
 
 
 class WatchaClient:
-    """Watcha Pedia client that handles login and rating lookups."""
+    """Watcha Pedia client that handles login and rating lookups via Playwright."""
 
     def __init__(self, email: str, password: str) -> None:
         self.email = email
         self.password = password
-        self.session = requests.Session()
-        self.session.headers.update(WATCHA_HEADERS)
         self._logged_in = False
 
-    def login(self) -> bool:
-        """Log in to Watcha Pedia using email/password.
+    async def login(self) -> bool:
+        """Log in to Watcha Pedia using email/password via headless browser.
 
         Returns True on success, False on failure.
         """
+        page = await get_page()
         try:
-            resp = self.session.post(
-                f"{WATCHA_API_URL}/api/auth",
-                json={"email": self.email, "password": self.password},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                self._logged_in = True
-                logger.info("Watcha Pedia login successful")
-                return True
+            await page.goto(WATCHA_LOGIN_URL, wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(1000)
 
-            logger.warning(
-                "Watcha Pedia login failed: %s %s",
-                resp.status_code,
-                resp.text[:200],
+            # Fill login form
+            email_input = await page.query_selector(
+                'input[type="email"], input[name="email"], input[placeholder*="이메일"]'
             )
-            return False
+            password_input = await page.query_selector(
+                'input[type="password"], input[name="password"]'
+            )
+
+            if not email_input or not password_input:
+                logger.warning("Watcha login form not found")
+                return False
+
+            await email_input.fill(self.email)
+            await password_input.fill(self.password)
+
+            # Click login button
+            login_btn = await page.query_selector(
+                'button[type="submit"], button:has-text("로그인")'
+            )
+            if login_btn:
+                await login_btn.click()
+            else:
+                await page.keyboard.press("Enter")
+
+            # Wait for navigation after login
+            await page.wait_for_timeout(3000)
+
+            # Check if login succeeded by looking for user menu or absence of login form
+            still_on_login = await page.query_selector(
+                'input[type="password"]'
+            )
+            if still_on_login:
+                logger.warning("Watcha Pedia login failed: still on login page")
+                return False
+
+            self._logged_in = True
+            logger.info("Watcha Pedia login successful")
+            return True
+
         except Exception:
             logger.exception("Watcha Pedia login error")
             return False
+        finally:
+            await page.close()
 
-    def _ensure_login(self) -> bool:
+    async def _ensure_login(self) -> bool:
         """Ensure we have an active session."""
         if not self._logged_in:
-            return self.login()
+            return await self.login()
         return True
 
-    def get_expected_rating(self, movie_name: str) -> float | None:
+    async def get_expected_rating(self, movie_name: str) -> float | None:
         """Search for a movie and return its expected rating (예상 별점).
 
         Returns the predicted rating as a float (e.g. 3.5), or None
         if the movie is not found or the rating is unavailable.
         """
-        if not self._ensure_login():
+        if not await self._ensure_login():
             return None
 
+        page = await get_page()
         try:
-            search_resp = self.session.get(
-                f"{WATCHA_API_URL}/api/searches",
-                params={"query": movie_name},
-                timeout=15,
+            # Navigate to search page
+            search_url = f"{WATCHA_SEARCH_URL}?query={movie_name}"
+            await page.goto(search_url, wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(2000)
+
+            # Click first movie result
+            first_result = await page.query_selector(
+                'a[href*="/contents/"], [class*="search"] a[href*="/contents/"]'
             )
-            if search_resp.status_code != 200:
-                logger.warning("Watcha search failed: %s", search_resp.status_code)
+            if not first_result:
+                logger.info("No Watcha search result for: %s", movie_name)
                 return None
 
-            data = search_resp.json()
-            results = data.get("result", {}).get("result", {}).get("body", [])
-            if not results:
-                return None
+            await first_result.click()
+            await page.wait_for_timeout(2000)
 
-            # Find the first movie result
-            for item in results:
-                content = item.get("content", {})
-                if content.get("content_type") == "movies":
-                    # The predicted rating may be in the response
-                    predicted = content.get("ratings_avg")
-                    if predicted:
-                        return round(float(predicted), 1)
+            # Extract expected rating from detail page
+            rating = await page.evaluate(
+                """() => {
+                    const allText = document.body.innerText;
+                    // Look for patterns like "예상 ★ 3.5" or "예상별점 3.5"
+                    const patterns = [
+                        /예상[\\s]*[★☆]*[\\s]*([\\d.]+)/,
+                        /predicted[\\s]*(?:rating)?[\\s]*:?[\\s]*([\\d.]+)/i,
+                        /expected[\\s]*(?:rating)?[\\s]*:?[\\s]*([\\d.]+)/i,
+                    ];
+                    for (const pat of patterns) {
+                        const match = allText.match(pat);
+                        if (match) return parseFloat(match[1]);
+                    }
 
-                    # Try fetching the detail page for the predicted rating
-                    code = content.get("code")
-                    if code:
-                        return self._fetch_detail_rating(code)
+                    // Also check for rating elements in the DOM
+                    const ratingEls = document.querySelectorAll(
+                        '[class*="predicted"], [class*="expected"], [class*="rating"]'
+                    );
+                    for (const el of ratingEls) {
+                        const text = el.textContent || '';
+                        const numMatch = text.match(/(\\d+\\.?\\d*)/);
+                        if (numMatch) {
+                            const val = parseFloat(numMatch[1]);
+                            if (val > 0 && val <= 5) return val;
+                        }
+                    }
+
+                    return null;
+                }"""
+            )
+
+            if rating is not None:
+                return round(float(rating), 1)
 
             return None
+
         except Exception:
             logger.exception("Failed to get Watcha rating for %s", movie_name)
             return None
-
-    def _fetch_detail_rating(self, content_code: str) -> float | None:
-        """Fetch the predicted rating from a movie's detail page."""
-        try:
-            resp = self.session.get(
-                f"{WATCHA_BASE_URL}/ko-KR/contents/{content_code}",
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return None
-
-            soup = BeautifulSoup(resp.text, "lxml")
-            # Look for the predicted/expected rating element
-            rating_el = soup.select_one("[class*='predicted'], [class*='expected']")
-            if rating_el:
-                match = re.search(r"(\d+\.?\d*)", rating_el.text)
-                if match:
-                    return round(float(match.group(1)), 1)
-
-            return None
-        except Exception:
-            logger.exception("Failed to fetch detail rating for %s", content_code)
-            return None
+        finally:
+            await page.close()

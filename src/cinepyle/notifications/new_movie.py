@@ -81,7 +81,7 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Try to get Watcha expected rating
         try:
-            rating = watcha.get_expected_rating(name)
+            rating = await watcha.get_expected_rating(name)
         except Exception:
             logger.exception("Watcha rating lookup failed for %s", name)
             rating = None
