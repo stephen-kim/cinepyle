@@ -164,6 +164,24 @@ class SettingsManager:
         return []
 
     # ------------------------------------------------------------------
+    # Screen monitors
+    # ------------------------------------------------------------------
+
+    def get_screen_monitors(self) -> list[dict]:
+        """Return the list of screen monitor targets.
+
+        Each dict has keys: chain_key, theater_code, theater_name, screen_filter.
+        screen_filter is "all" for whole-theater monitoring or a specific screen name.
+        """
+        raw = self.get("screen_monitors", "")
+        if raw:
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+        return []
+
+    # ------------------------------------------------------------------
     # Theater list cache (daily sync)
     # ------------------------------------------------------------------
 
