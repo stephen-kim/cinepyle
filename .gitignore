@@ -1,1 +1,22 @@
+# Environment
+.env
 application.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# uv
+.venv/
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
