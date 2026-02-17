@@ -1,12 +1,18 @@
-"""Watcha Pedia expected rating scraper using Playwright.
+"""Watcha Pedia expected rating scraper using Playwright with self-healing.
 
 Watcha Pedia does not provide a public API for predicted ratings.
-This module logs in via a headless browser and scrapes the expected
-rating (예상 별점) for a given movie title.
+This module logs in via a headless browser, searches for movies,
+and extracts the expected rating from the detail page.
+
+The rating extraction step uses the self-healing engine so it can
+adapt when Watcha changes their page structure.
 """
 
 import logging
 
+from cinepyle.config import ANTHROPIC_API_KEY, HEALING_DB_PATH
+from cinepyle.healing.engine import HealingEngine
+from cinepyle.healing.strategy import ExtractionTask
 from cinepyle.scrapers.browser import get_page
 
 logger = logging.getLogger(__name__)
@@ -14,6 +20,60 @@ logger = logging.getLogger(__name__)
 WATCHA_BASE_URL = "https://pedia.watcha.com"
 WATCHA_LOGIN_URL = f"{WATCHA_BASE_URL}/ko-KR/sign_in"
 WATCHA_SEARCH_URL = f"{WATCHA_BASE_URL}/ko-KR/search"
+
+# --- Healing setup ---
+
+_engine: HealingEngine | None = None
+
+
+def _get_engine() -> HealingEngine:
+    global _engine
+    if _engine is None:
+        _engine = HealingEngine(ANTHROPIC_API_KEY, HEALING_DB_PATH)
+    return _engine
+
+
+WATCHA_RATING_TASK = ExtractionTask(
+    task_id="watcha_expected_rating",
+    url=f"{WATCHA_BASE_URL}/ko-KR/contents/...",
+    description=(
+        "This is a Watcha Pedia movie detail page. Find the predicted/expected "
+        "rating (예상 별점) for the logged-in user. This is typically displayed "
+        "near the top of the page as a star rating with a label like '예상' "
+        "(expected) or '예상 별점'. Return the numeric rating value as a number. "
+        "The rating scale is 0.5 to 5.0."
+    ),
+    expected_type="float",
+    validation_hint="Should be a float between 0.5 and 5.0, representing a star rating.",
+    example_result="3.5",
+)
+
+HARDCODED_RATING_JS = """(() => {
+    // Strategy 1: Search for 예상 pattern in text
+    const allText = document.body.innerText;
+    const patterns = [
+        /예상[\\s]*[★☆]*[\\s]*([\\d.]+)/,
+        /predicted[\\s]*(?:rating)?[\\s]*:?[\\s]*([\\d.]+)/i,
+        /expected[\\s]*(?:rating)?[\\s]*:?[\\s]*([\\d.]+)/i,
+    ];
+    for (const pat of patterns) {
+        const match = allText.match(pat);
+        if (match) return parseFloat(match[1]);
+    }
+    // Strategy 2: Check DOM elements with rating-related classes
+    const ratingEls = document.querySelectorAll(
+        '[class*="predicted"], [class*="expected"], [class*="rating"]'
+    );
+    for (const el of ratingEls) {
+        const text = el.textContent || '';
+        const numMatch = text.match(/(\\d+\\.?\\d*)/);
+        if (numMatch) {
+            const val = parseFloat(numMatch[1]);
+            if (val > 0 && val <= 5) return val;
+        }
+    }
+    return null;
+})()"""
 
 
 class WatchaClient:
@@ -61,10 +121,8 @@ class WatchaClient:
             # Wait for navigation after login
             await page.wait_for_timeout(3000)
 
-            # Check if login succeeded by looking for user menu or absence of login form
-            still_on_login = await page.query_selector(
-                'input[type="password"]'
-            )
+            # Check if login succeeded
+            still_on_login = await page.query_selector('input[type="password"]')
             if still_on_login:
                 logger.warning("Watcha Pedia login failed: still on login page")
                 return False
@@ -87,6 +145,9 @@ class WatchaClient:
 
     async def get_expected_rating(self, movie_name: str) -> float | None:
         """Search for a movie and return its expected rating (예상 별점).
+
+        Uses self-healing extraction for the rating value so it can
+        adapt when Watcha changes their page layout.
 
         Returns the predicted rating as a float (e.g. 3.5), or None
         if the movie is not found or the rating is unavailable.
@@ -112,36 +173,10 @@ class WatchaClient:
             await first_result.click()
             await page.wait_for_timeout(2000)
 
-            # Extract expected rating from detail page
-            rating = await page.evaluate(
-                """() => {
-                    const allText = document.body.innerText;
-                    // Look for patterns like "예상 ★ 3.5" or "예상별점 3.5"
-                    const patterns = [
-                        /예상[\\s]*[★☆]*[\\s]*([\\d.]+)/,
-                        /predicted[\\s]*(?:rating)?[\\s]*:?[\\s]*([\\d.]+)/i,
-                        /expected[\\s]*(?:rating)?[\\s]*:?[\\s]*([\\d.]+)/i,
-                    ];
-                    for (const pat of patterns) {
-                        const match = allText.match(pat);
-                        if (match) return parseFloat(match[1]);
-                    }
-
-                    // Also check for rating elements in the DOM
-                    const ratingEls = document.querySelectorAll(
-                        '[class*="predicted"], [class*="expected"], [class*="rating"]'
-                    );
-                    for (const el of ratingEls) {
-                        const text = el.textContent || '';
-                        const numMatch = text.match(/(\\d+\\.?\\d*)/);
-                        if (numMatch) {
-                            const val = parseFloat(numMatch[1]);
-                            if (val > 0 && val <= 5) return val;
-                        }
-                    }
-
-                    return null;
-                }"""
+            # Extract rating using healing engine
+            engine = _get_engine()
+            rating = await engine.extract(
+                page, WATCHA_RATING_TASK, hardcoded_js=HARDCODED_RATING_JS
             )
 
             if rating is not None:

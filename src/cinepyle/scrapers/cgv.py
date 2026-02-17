@@ -1,163 +1,126 @@
-"""CGV IMAX screening scraper.
+"""CGV IMAX screening scraper using Playwright with self-healing.
 
-CGV migrated to a Next.js-based site in July 2025. The old
-iframeTheater.aspx endpoint no longer works. The new site uses
-internal API endpoints under cgv.co.kr for schedule data.
-
-This module attempts to fetch schedule data from the new CGV API.
-If the API structure changes, the CSS selectors / JSON paths will
-need to be updated accordingly.
+CGV migrated to a Next.js-based site in July 2025. This module uses
+a headless browser to render the schedule page and extract IMAX
+screening information. If the hardcoded extraction strategy breaks
+(e.g. site redesign), the healing engine calls Claude to generate
+a new strategy automatically.
 """
 
 import logging
-from datetime import datetime
 
-import requests
+from cinepyle.config import ANTHROPIC_API_KEY, HEALING_DB_PATH
+from cinepyle.healing.engine import HealingEngine
+from cinepyle.healing.strategy import ExtractionTask
+from cinepyle.scrapers.browser import get_page
 
 logger = logging.getLogger(__name__)
 
-# CGV new system API endpoint (discovered from Next.js site)
-CGV_SCHEDULE_API = "https://cgv.co.kr/api/schedules"
-
-# CGV용산아이파크몰 identifiers
+# CGV용산아이파크몰
 YONGSAN_THEATER_CODE = "0013"
 YONGSAN_REGION_CODE = "01"
 
-# Booking deeplink (new system)
-CGV_BOOKING_BASE = "https://cgv.co.kr/cnm/movieBook/cinema"
+# New CGV URLs (post-July 2025)
+CGV_THEATER_URL = (
+    f"https://cgv.co.kr/cnm/bzplcCgv/{YONGSAN_REGION_CODE}{YONGSAN_THEATER_CODE}"
+)
+CGV_BOOKING_URL = "https://cgv.co.kr/cnm/movieBook/cinema"
 
-# Fallback: direct theater page
-CGV_THEATER_PAGE = "https://cgv.co.kr/cnm/bzplcCgv"
+# --- Healing setup ---
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+_engine: HealingEngine | None = None
+
+
+def _get_engine() -> HealingEngine:
+    global _engine
+    if _engine is None:
+        _engine = HealingEngine(ANTHROPIC_API_KEY, HEALING_DB_PATH)
+    return _engine
+
+
+IMAX_TASK = ExtractionTask(
+    task_id="cgv_imax_title",
+    url=CGV_THEATER_URL,
+    description=(
+        "This is a CGV movie theater schedule page for the Yongsan I'Park Mall "
+        "location (CGV용산아이파크몰). Find any movie that is currently screening "
+        "in an IMAX hall/screen. IMAX screenings are identified by the word 'IMAX' "
+        "appearing in the screen name, hall name, or format label. Return the movie "
+        "title (Korean name) of the movie showing in IMAX. If there is no IMAX "
+        "screening listed on this page, return null."
     ),
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://cgv.co.kr/",
-}
+    expected_type="string",
+    validation_hint=(
+        "Should be a Korean movie title, 1-50 characters, no HTML tags. "
+        "Examples: '인터스텔라', '듄: 파트2', '오펜하이머'"
+    ),
+    example_result="인터스텔라",
+)
+
+HARDCODED_IMAX_JS = """(() => {
+    // Strategy 1: Find IMAX in class names, traverse up for title
+    const imaxEls = document.querySelectorAll("[class*='imax'], [class*='IMAX']");
+    for (const el of imaxEls) {
+        let parent = el;
+        for (let i = 0; i < 10; i++) {
+            parent = parent.parentElement;
+            if (!parent) break;
+            const title = parent.querySelector(
+                '[class*="movie"], [class*="title"], h3, h4, strong'
+            );
+            if (title && title.textContent.trim().length > 0) {
+                return title.textContent.trim();
+            }
+        }
+    }
+    // Strategy 2: Text search for IMAX mention
+    const allText = document.body.innerText;
+    const lines = allText.split('\\n').map(l => l.trim()).filter(l => l);
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toUpperCase().includes('IMAX')) {
+            for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
+                if (lines[j].length > 1 && !lines[j].match(/^[0-9:]+$/)) {
+                    return lines[j];
+                }
+            }
+            return lines[i].replace(/IMAX/gi, '').trim() || lines[i];
+        }
+    }
+    return null;
+})()"""
 
 
-def check_imax_screening() -> tuple[str, str] | None:
+async def check_imax_screening() -> tuple[str, str] | None:
     """Check CGV용산아이파크몰 for IMAX screenings.
 
-    Attempts multiple strategies to find IMAX screenings:
-    1. Try the new CGV API endpoint for schedule data
-    2. Fall back to scraping the theater page
+    Uses the self-healing engine: tries cached strategy, then
+    hardcoded JS, then asks Claude to generate a new strategy.
 
     Returns (movie_title, booking_url) if an IMAX screening is found,
     or None if no IMAX screening is currently listed.
     """
-    today = datetime.now().strftime("%Y%m%d")
-
-    # Strategy 1: Try new API endpoint
-    result = _check_via_api(today)
-    if result is not None:
-        return result
-
-    # Strategy 2: Try scraping the theater page directly
-    result = _check_via_theater_page(today)
-    if result is not None:
-        return result
-
-    return None
-
-
-def _check_via_api(date: str) -> tuple[str, str] | None:
-    """Try fetching IMAX schedule via CGV's internal API."""
+    page = await get_page()
     try:
-        resp = requests.get(
-            CGV_SCHEDULE_API,
-            params={
-                "theaterCode": YONGSAN_THEATER_CODE,
-                "date": date,
-            },
-            headers=HEADERS,
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            logger.debug("CGV API returned %s", resp.status_code)
+        await page.goto(CGV_THEATER_URL, wait_until="networkidle", timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        # Quick check: is "IMAX" even on the page?
+        content = await page.content()
+        if "IMAX" not in content.upper():
             return None
 
-        data = resp.json()
+        # Use healing engine
+        engine = _get_engine()
+        title = await engine.extract(page, IMAX_TASK, hardcoded_js=HARDCODED_IMAX_JS)
 
-        # Look for IMAX screenings in the response
-        # The exact JSON structure depends on CGV's API implementation
-        for movie in data.get("movies", data.get("schedules", [])):
-            halls = movie.get("halls", movie.get("screenings", []))
-            for hall in halls:
-                hall_name = str(
-                    hall.get("hallName", hall.get("screenName", ""))
-                )
-                if "IMAX" in hall_name.upper():
-                    title = movie.get(
-                        "movieName", movie.get("title", "Unknown")
-                    )
-                    booking_url = (
-                        f"{CGV_BOOKING_BASE}"
-                        f"?theaterCode={YONGSAN_THEATER_CODE}"
-                    )
-                    return title, booking_url
+        if title:
+            booking_url = f"{CGV_BOOKING_URL}?theaterCode={YONGSAN_THEATER_CODE}"
+            return title, booking_url
 
         return None
-    except Exception:
-        logger.debug("CGV API request failed", exc_info=True)
-        return None
-
-
-def _check_via_theater_page(date: str) -> tuple[str, str] | None:
-    """Try scraping the CGV theater page for IMAX info."""
-    try:
-        # Try the new theater page URL pattern
-        url = f"{CGV_THEATER_PAGE}/{YONGSAN_REGION_CODE}{YONGSAN_THEATER_CODE}"
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-
-        if resp.status_code != 200:
-            logger.debug("CGV theater page returned %s", resp.status_code)
-            return None
-
-        # Check for IMAX in the page content
-        content = resp.text.lower()
-        if "imax" not in content:
-            return None
-
-        # Try to extract from Next.js __NEXT_DATA__
-        import json
-        import re
-
-        match = re.search(
-            r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-            resp.text,
-        )
-        if match:
-            next_data = json.loads(match.group(1))
-            props = next_data.get("props", {}).get("pageProps", {})
-
-            # Look through the data for IMAX screenings
-            for key, value in props.items():
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict):
-                            item_str = json.dumps(item).upper()
-                            if "IMAX" in item_str:
-                                title = item.get(
-                                    "movieName",
-                                    item.get("title", "IMAX 영화"),
-                                )
-                                booking_url = (
-                                    f"{CGV_BOOKING_BASE}"
-                                    f"?theaterCode={YONGSAN_THEATER_CODE}"
-                                )
-                                return title, booking_url
-
-        # Fallback: we know IMAX exists but can't extract the title
-        booking_url = (
-            f"{CGV_BOOKING_BASE}?theaterCode={YONGSAN_THEATER_CODE}"
-        )
-        return "IMAX 상영 (제목 확인 필요)", booking_url
 
     except Exception:
-        logger.debug("CGV theater page scraping failed", exc_info=True)
+        logger.exception("Failed to check IMAX screening")
         return None
+    finally:
+        await page.close()

@@ -18,5 +18,8 @@ uv.lock
 .vscode/
 .idea/
 
+# Data
+data/
+
 # OS
 .DS_Store
