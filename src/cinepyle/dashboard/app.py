@@ -46,6 +46,38 @@ def _cred_exists(mgr, key: str) -> bool:
     return bool(mgr.get(key, ""))
 
 
+# Mapping: credential form key → .env config attribute name
+_CRED_ENV_MAP: dict[str, str] = {
+    "credential:cgv_id": "CGV_ID",
+    "credential:cgv_password": "CGV_PASSWORD",
+    "credential:lottecinema_id": "LOTTECINEMA_ID",
+    "credential:lottecinema_password": "LOTTECINEMA_PASSWORD",
+    "credential:megabox_id": "MEGABOX_ID",
+    "credential:megabox_password": "MEGABOX_PASSWORD",
+    "credential:cineq_id": "CINEQ_ID",
+    "credential:cineq_password": "CINEQ_PASSWORD",
+    "credential:anthropic_api_key": "ANTHROPIC_API_KEY",
+    "credential:openai_api_key": "OPENAI_API_KEY",
+    "credential:gemini_api_key": "GEMINI_API_KEY",
+    "credential:kofic_api_key": "KOBIS_API_KEY",
+    "credential:watcha_email": "WATCHA_EMAIL",
+    "credential:watcha_password": "WATCHA_PASSWORD",
+    "credential:naver_maps_client_id": "NAVER_MAPS_CLIENT_ID",
+    "credential:naver_maps_client_secret": "NAVER_MAPS_CLIENT_SECRET",
+    "credential:telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+    "credential:telegram_chat_id": "TELEGRAM_CHAT_ID",
+}
+
+
+def _env_cred_set(key: str) -> bool:
+    """Check if a credential is set via .env (environment variable)."""
+    import cinepyle.config as cfg
+    attr = _CRED_ENV_MAP.get(key, "")
+    if not attr:
+        return False
+    return bool(getattr(cfg, attr, ""))
+
+
 # ------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------
@@ -71,19 +103,12 @@ async def settings_page(request: Request):
     # LLM priority
     llm_priority = mgr.get_llm_priority()
 
-    # Credentials — just need to know which ones are set (for placeholder)
+    # Credentials — check which ones are set (dashboard DB or .env)
     creds: dict[str, bool] = {}
-    for key_prefix in [
-        "credential:cgv_id", "credential:cgv_password",
-        "credential:lottecinema_id", "credential:lottecinema_password",
-        "credential:megabox_id", "credential:megabox_password",
-        "credential:cineq_id", "credential:cineq_password",
-        "credential:anthropic_api_key", "credential:openai_api_key",
-        "credential:gemini_api_key", "credential:kofic_api_key",
-        "credential:watcha_email", "credential:watcha_password",
-        "credential:naver_maps_client_id", "credential:naver_maps_client_secret",
-    ]:
+    env_creds: dict[str, bool] = {}
+    for key_prefix in _CRED_ENV_MAP:
         creds[key_prefix] = _cred_exists(mgr, key_prefix)
+        env_creds[key_prefix] = _env_cred_set(key_prefix)
 
     return templates.TemplateResponse(
         request=request,
@@ -95,6 +120,7 @@ async def settings_page(request: Request):
             "current_theater_code": current_theater_code,
             "llm_priority": llm_priority,
             "creds": creds,
+            "env_creds": env_creds,
         },
     )
 
