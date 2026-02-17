@@ -7,12 +7,13 @@ in-place updates without full page reloads.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 logger = logging.getLogger(__name__)
@@ -52,12 +53,6 @@ def _provider_has_key(mgr, provider: str) -> bool:
 def _get_mgr():
     from cinepyle.dashboard.settings_manager import SettingsManager
     return SettingsManager.get_instance()
-
-
-def _get_imax_theaters() -> list[dict]:
-    """Load CGV IMAX theaters sorted by name."""
-    from cinepyle.theaters.data_cgv import get_imax_theaters
-    return sorted(get_imax_theaters(), key=lambda t: t["TheaterName"])
 
 
 # Chain display names (for search results)
@@ -161,25 +156,29 @@ async def settings_page(request: Request):
     mgr = _get_mgr()
 
     # Intervals
-    imax_interval = mgr.get("imax_check_interval", "600")
+    screen_check_interval = mgr.get("screen_check_interval", "600")
     new_movie_interval = mgr.get("new_movie_check_interval", "3600")
 
-    # IMAX theaters (checkbox list)
-    imax_theaters = _get_imax_theaters()
-    imax_selected_codes = {t["code"] for t in mgr.get_imax_monitor_theaters()}
+    # Screen monitors
+    screen_monitors = mgr.get_screen_monitors()
 
-    # Migration: old single theater → new lists (one-time)
-    if not mgr.get("imax_monitor_theaters") and mgr.get("preferred_theater_code"):
-        from cinepyle.theaters.data_cgv import IMAX_THEATER_CODES
-        old_code = mgr.get("preferred_theater_code")
-        old_region = mgr.get("preferred_theater_region", "")
-        old_name = mgr.get("preferred_theater_name", "")
-        if old_code and old_code in IMAX_THEATER_CODES:
-            await mgr.set("imax_monitor_theaters", json.dumps(
-                [{"code": old_code, "region": old_region, "name": old_name}],
-                ensure_ascii=False,
-            ))
-            imax_selected_codes = {old_code}
+    # Migration: old IMAX monitors → new screen monitors (one-time)
+    if not mgr.get("screen_monitors") and mgr.get("imax_monitor_theaters"):
+        old_imax = mgr.get_imax_monitor_theaters()
+        if old_imax:
+            migrated: list[dict] = []
+            for t in old_imax:
+                migrated.append({
+                    "chain_key": "cgv",
+                    "theater_code": t.get("code", ""),
+                    "theater_name": t.get("name", ""),
+                    "screen_filter": "IMAX",
+                })
+            await mgr.set(
+                "screen_monitors",
+                json.dumps(migrated, ensure_ascii=False),
+            )
+            screen_monitors = migrated
 
     # Preferred theaters
     preferred_theaters = mgr.get_preferred_theaters()
@@ -199,14 +198,14 @@ async def settings_page(request: Request):
         request=request,
         name="settings.html",
         context={
-            "imax_interval": imax_interval,
+            "screen_check_interval": screen_check_interval,
             "new_movie_interval": new_movie_interval,
-            "imax_theaters": imax_theaters,
-            "imax_selected_codes": imax_selected_codes,
+            "screen_monitors": screen_monitors,
             "preferred_theaters": preferred_theaters,
             "llm_priority": llm_priority,
             "creds": creds,
             "env_creds": env_creds,
+            "chain_display": _CHAIN_DISPLAY,
         },
     )
 
@@ -214,24 +213,26 @@ async def settings_page(request: Request):
 @app.post("/settings/intervals", response_class=HTMLResponse)
 async def update_intervals(
     request: Request,
-    imax_interval: int = Form(...),
+    screen_check_interval: int = Form(...),
     new_movie_interval: int = Form(...),
 ):
     mgr = _get_mgr()
 
     # Validate
-    imax_interval = max(60, min(86400, imax_interval))
+    screen_check_interval = max(60, min(86400, screen_check_interval))
     new_movie_interval = max(60, min(86400, new_movie_interval))
 
-    await mgr.set("imax_check_interval", str(imax_interval))
+    await mgr.set("screen_check_interval", str(screen_check_interval))
     await mgr.set("new_movie_check_interval", str(new_movie_interval))
 
     # Reschedule running jobs
     try:
-        from cinepyle.notifications.imax import check_imax_job
+        from cinepyle.notifications.screen_monitor import check_screens_job
         from cinepyle.notifications.new_movie import check_new_movies_job
 
-        await mgr.reschedule_job("imax_check", check_imax_job, imax_interval)
+        await mgr.reschedule_job(
+            "screen_monitor", check_screens_job, screen_check_interval
+        )
         await mgr.reschedule_job(
             "new_movie_check", check_new_movies_job, new_movie_interval
         )
@@ -242,38 +243,51 @@ async def update_intervals(
         request=request,
         name="partials/intervals_status.html",
         context={
-            "imax_interval": imax_interval,
+            "screen_check_interval": screen_check_interval,
             "new_movie_interval": new_movie_interval,
         },
     )
 
 
-@app.post("/settings/imax-theaters", response_class=HTMLResponse)
-async def update_imax_theaters(request: Request):
-    """Save selected IMAX monitor theaters (checkbox form)."""
+@app.post("/settings/screen-monitors", response_class=HTMLResponse)
+async def update_screen_monitors(request: Request):
+    """Save screen monitor list (JSON from hidden input)."""
     mgr = _get_mgr()
     form = await request.form()
 
-    # Checkboxes: multiple values with name "imax_theater"
-    # Each value is "code:region:name"
-    selected = form.getlist("imax_theater")
-
-    theaters: list[dict] = []
-    for val in selected:
-        parts = val.split(":", 2)
-        if len(parts) == 3:
-            theaters.append({"code": parts[0], "region": parts[1], "name": parts[2]})
+    raw = form.get("screen_monitors_json", "[]")
+    try:
+        monitors = json.loads(raw)
+    except json.JSONDecodeError:
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/error.html",
+            context={"message": "잘못된 데이터입니다."},
+        )
 
     await mgr.set(
-        "imax_monitor_theaters", json.dumps(theaters, ensure_ascii=False)
+        "screen_monitors", json.dumps(monitors, ensure_ascii=False)
     )
 
-    names = [t["name"] for t in theaters]
     return templates.TemplateResponse(
         request=request,
-        name="partials/imax_theaters_status.html",
-        context={"theater_names": names, "count": len(theaters)},
+        name="partials/monitor_status.html",
+        context={"count": len(monitors)},
     )
+
+
+@app.get("/api/theaters/{chain_key}/{theater_code}/screens")
+async def get_theater_screens(chain_key: str, theater_code: str):
+    """Return screen/hall names for a theater (JSON API for UI)."""
+    from cinepyle.scrapers.screens import fetch_screen_names
+
+    try:
+        names = await asyncio.to_thread(fetch_screen_names, chain_key, theater_code)
+    except Exception:
+        logger.exception("Screen names fetch failed for %s/%s", chain_key, theater_code)
+        names = []
+
+    return JSONResponse(content={"screens": names})
 
 
 @app.post("/settings/preferred-theaters", response_class=HTMLResponse)
@@ -304,8 +318,16 @@ async def update_preferred_theaters(request: Request):
 
 
 @app.get("/api/theaters/search", response_class=HTMLResponse)
-async def search_theaters(request: Request, q: str = Query("")):
-    """HTMX endpoint: search theaters across all chains (from DB cache)."""
+async def search_theaters(
+    request: Request,
+    q: str = Query(""),
+    context: str = Query("preferred"),
+):
+    """HTMX endpoint: search theaters across all chains (from DB cache).
+
+    context="preferred" → for preferred theaters card (add directly)
+    context="monitor"   → for screen monitor card (choose whole or per-screen)
+    """
     if len(q.strip()) < 1:
         return HTMLResponse("")
 
@@ -319,9 +341,15 @@ async def search_theaters(request: Request, q: str = Query("")):
 
     matches = [t for t in all_theaters if query in t["name"].lower()][:20]
 
+    template_name = (
+        "partials/monitor_search_results.html"
+        if context == "monitor"
+        else "partials/theater_search_results.html"
+    )
+
     return templates.TemplateResponse(
         request=request,
-        name="partials/theater_search_results.html",
+        name=template_name,
         context={"results": matches, "chain_display": _CHAIN_DISPLAY},
     )
 

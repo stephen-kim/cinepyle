@@ -28,8 +28,8 @@ from cinepyle.config import (
 from cinepyle.dashboard.app import app as fastapi_app
 from cinepyle.dashboard.settings_manager import SettingsManager
 from cinepyle.notifications.daily_digest import daily_digest_job
-from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
+from cinepyle.notifications.screen_monitor import check_screens_job
 from cinepyle.notifications.theater_sync import load_seed_theaters, sync_theaters_job
 from cinepyle.scrapers.browser import close_browser
 
@@ -77,13 +77,13 @@ async def async_main() -> None:
     # 4. Scheduled jobs (intervals from settings, fallback to defaults)
     job_queue = app.job_queue
 
-    imax_interval = int(settings.get("imax_check_interval", "600"))
+    screen_interval = int(settings.get("screen_check_interval", "600"))
     job_queue.run_repeating(
-        check_imax_job,
-        interval=imax_interval,
+        check_screens_job,
+        interval=screen_interval,
         first=10,
         data=TELEGRAM_CHAT_ID,
-        name="imax_check",
+        name="screen_monitor",
     )
 
     new_movie_interval = int(settings.get("new_movie_check_interval", "3600"))

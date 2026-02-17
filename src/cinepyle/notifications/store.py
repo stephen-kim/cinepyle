@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS known_movies (
     movie_code  TEXT PRIMARY KEY,
     added_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS notified_screens (
+    dedup_key   TEXT PRIMARY KEY,
+    notified_at TEXT NOT NULL
+);
 """
 
 
@@ -57,6 +62,26 @@ class NotificationStore:
             "INSERT OR IGNORE INTO notified_imax (title, notified_at) "
             "VALUES (?, datetime('now'))",
             (title,),
+        )
+        await db.commit()
+
+    # ---- Screen monitor ----
+
+    async def is_screen_notified(self, dedup_key: str) -> bool:
+        """Check if a screen+movie combo was already notified."""
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT 1 FROM notified_screens WHERE dedup_key = ?", (dedup_key,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def add_screen_notified(self, dedup_key: str) -> None:
+        """Record a screen+movie combo as notified."""
+        db = await self._ensure_db()
+        await db.execute(
+            "INSERT OR IGNORE INTO notified_screens (dedup_key, notified_at) "
+            "VALUES (?, datetime('now'))",
+            (dedup_key,),
         )
         await db.commit()
 
