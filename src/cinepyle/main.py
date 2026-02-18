@@ -22,6 +22,9 @@ from cinepyle.digest.job import send_digest_job
 from cinepyle.digest.settings import DigestSettings
 from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
+from cinepyle.notifications.screen_alert import check_screen_alerts_job
+from cinepyle.notifications.screen_settings import ScreenAlertSettings
+from cinepyle.theaters.sync_job import theater_sync_job
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -83,9 +86,9 @@ def main() -> None:
     )
 
     # Daily digest
+    KST = ZoneInfo("Asia/Seoul")
     settings = DigestSettings.load()
     if settings.schedule_enabled:
-        KST = ZoneInfo("Asia/Seoul")
         job_queue.run_daily(
             send_digest_job,
             time=dt_time(
@@ -100,6 +103,36 @@ def main() -> None:
             "Daily digest scheduled at %02d:%02d KST",
             settings.schedule_hour,
             settings.schedule_minute,
+        )
+
+    # Theater & screen sync: daily at 04:00 KST + once at startup
+    job_queue.run_daily(
+        theater_sync_job,
+        time=dt_time(hour=4, minute=0, tzinfo=KST),
+        data=TELEGRAM_CHAT_ID,
+        name="theater_sync",
+    )
+    job_queue.run_once(
+        theater_sync_job,
+        when=30,
+        data=TELEGRAM_CHAT_ID,
+        name="theater_sync_initial",
+    )
+    logger.info("Theater sync scheduled (daily 04:00 KST + startup)")
+
+    # Screen alert check
+    screen_settings = ScreenAlertSettings.load()
+    if screen_settings.alerts_enabled:
+        job_queue.run_repeating(
+            check_screen_alerts_job,
+            interval=screen_settings.check_interval_minutes * 60,
+            first=120,  # 2 min after startup (after initial sync)
+            data=TELEGRAM_CHAT_ID,
+            name="screen_alert_check",
+        )
+        logger.info(
+            "Screen alerts scheduled every %d min",
+            screen_settings.check_interval_minutes,
         )
 
     logger.info("Bot starting...")

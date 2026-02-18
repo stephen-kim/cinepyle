@@ -1,6 +1,5 @@
-"""FastAPI dashboard for digest settings."""
+"""FastAPI dashboard for digest and screen alert settings."""
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -9,6 +8,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from cinepyle.digest.settings import DigestSettings
+from cinepyle.notifications.screen_settings import ScreenAlertSettings
+from cinepyle.theaters.models import TheaterDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +24,48 @@ _chat_id: str = ""
 
 
 def set_bot_context(job_queue, chat_id: str) -> None:
-    """Store references so the dashboard can trigger test digests."""
+    """Store references so the dashboard can trigger jobs."""
     global _job_queue, _chat_id
     _job_queue = job_queue
     _chat_id = chat_id
 
 
+def _base_context(request: Request, active_tab: str = "digest", **extra):
+    """Build the common template context."""
+    return {
+        "request": request,
+        "settings": DigestSettings.load(),
+        "screen_settings": ScreenAlertSettings.load(),
+        "chains": _load_chains(),
+        "active_tab": active_tab,
+        "saved": False,
+        "test_sent": False,
+        "screen_saved": False,
+        "sync_triggered": False,
+        **extra,
+    }
+
+
+def _load_chains() -> dict[str, list]:
+    db = TheaterDatabase.load()
+    return {
+        "cgv": db.get_by_chain("cgv"),
+        "lotte": db.get_by_chain("lotte"),
+        "megabox": db.get_by_chain("megabox"),
+        "cineq": db.get_by_chain("cineq"),
+        "indie": db.get_by_chain("indie"),
+    }
+
+
+# -----------------------------------------------------------------------
+# Digest settings
+# -----------------------------------------------------------------------
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    settings = DigestSettings.load()
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "settings": settings, "saved": False, "test_sent": False},
-    )
+    ctx = _base_context(request, active_tab="digest")
+    return templates.TemplateResponse("index.html", ctx)
 
 
 @app.post("/settings", response_class=HTMLResponse)
@@ -51,7 +81,6 @@ async def save_settings(
     llm_api_key: str = Form(""),
     preferences: str = Form(""),
 ):
-    # Preserve existing API key if not changed
     current = DigestSettings.load()
     if not llm_api_key and current.llm_api_key:
         llm_api_key = current.llm_api_key
@@ -72,32 +101,73 @@ async def save_settings(
     settings.save()
     logger.info("Digest settings saved")
 
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "settings": settings, "saved": True, "test_sent": False},
-    )
+    ctx = _base_context(request, active_tab="digest", saved=True)
+    ctx["settings"] = settings
+    return templates.TemplateResponse("index.html", ctx)
 
 
 @app.post("/test-digest", response_class=HTMLResponse)
 async def test_digest(request: Request):
-    """Trigger an immediate digest send for testing."""
-    settings = DigestSettings.load()
-
     if _job_queue is not None:
-        # Run the digest job via the bot's job queue
         from cinepyle.digest.job import send_digest_job
 
         _job_queue.run_once(
-            send_digest_job,
-            when=0,
-            data=_chat_id,
-            name="test_digest",
+            send_digest_job, when=0, data=_chat_id, name="test_digest",
         )
         logger.info("Test digest triggered")
     else:
         logger.warning("Cannot trigger test digest: bot not connected")
 
-    return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "settings": settings, "saved": False, "test_sent": True},
+    ctx = _base_context(request, active_tab="digest", test_sent=True)
+    return templates.TemplateResponse("index.html", ctx)
+
+
+# -----------------------------------------------------------------------
+# Screen alert settings
+# -----------------------------------------------------------------------
+
+
+@app.get("/screens", response_class=HTMLResponse)
+async def screens_page(request: Request):
+    ctx = _base_context(request, active_tab="screens")
+    return templates.TemplateResponse("index.html", ctx)
+
+
+@app.post("/screens/save", response_class=HTMLResponse)
+async def save_screen_settings(request: Request):
+    form = await request.form()
+
+    watched = list(form.getlist("watched_screens"))
+    alerts_enabled = form.get("screen_alerts_enabled") == "true"
+    interval = int(form.get("check_interval_minutes", "30") or "30")
+
+    screen_settings = ScreenAlertSettings(
+        watched_screens=[w for w in watched if w],
+        alerts_enabled=alerts_enabled,
+        check_interval_minutes=max(10, min(interval, 120)),
     )
+    screen_settings.save()
+    logger.info(
+        "Screen alert settings saved: %d watched screens",
+        len(screen_settings.watched_screens),
+    )
+
+    ctx = _base_context(request, active_tab="screens", screen_saved=True)
+    ctx["screen_settings"] = screen_settings
+    return templates.TemplateResponse("index.html", ctx)
+
+
+@app.post("/screens/sync", response_class=HTMLResponse)
+async def trigger_sync(request: Request):
+    if _job_queue is not None:
+        from cinepyle.theaters.sync_job import theater_sync_job
+
+        _job_queue.run_once(
+            theater_sync_job, when=0, data=_chat_id, name="manual_sync",
+        )
+        logger.info("Manual theater sync triggered")
+    else:
+        logger.warning("Cannot trigger sync: bot not connected")
+
+    ctx = _base_context(request, active_tab="screens", sync_triggered=True)
+    return templates.TemplateResponse("index.html", ctx)
