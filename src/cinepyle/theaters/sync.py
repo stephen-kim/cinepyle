@@ -356,10 +356,26 @@ def sync_lotte() -> list[Theater]:
 # =========================================================================
 
 MEGABOX_URL = "https://www.megabox.co.kr/on/oh/ohc/Brch/schedulePage.do"
+MEGABOX_THEATER_LIST_URL = "https://www.megabox.co.kr/theater/list"
+
+
+def _megabox_all_branches(session: requests.Session) -> dict[str, str]:
+    """Scrape the full theater list (brchNo → name) from the HTML page."""
+    import re
+    from html import unescape
+
+    resp = session.get(MEGABOX_THEATER_LIST_URL, timeout=15)
+    resp.raise_for_status()
+    pairs = re.findall(r"brchNo=(\d{4})[^>]*>([^<]+)<", resp.text)
+    return {code: unescape(name.strip()) for code, name in pairs}
 
 
 def sync_megabox() -> list[Theater]:
-    """Fetch MegaBox theaters with individual halls from bulk schedule."""
+    """Fetch all MegaBox theaters with individual halls.
+
+    Step 1: Scrape the full theater list from the HTML page (117+ theaters).
+    Step 2: For each branch, fetch schedule to get individual halls + details.
+    """
     today = datetime.now().strftime("%Y%m%d")
     session = requests.Session()
     session.headers.update({
@@ -367,69 +383,68 @@ def sync_megabox() -> list[Theater]:
         "Referer": "https://www.megabox.co.kr/",
     })
 
-    # Step 1: Bulk fetch — all screenings nationwide
-    resp = session.post(
-        MEGABOX_URL,
-        data={"masterType": "brch", "playDe": today},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    all_items = resp.json().get("megaMap", {}).get("movieFormList", [])
-
-    # Group screens by branch
-    branch_screens: dict[str, dict[str, dict]] = {}
-    branch_names: dict[str, str] = {}
-    for item in all_items:
-        brch_no = str(item.get("brchNo", ""))
-        theab_no = str(item.get("theabNo", ""))
-        branch_names[brch_no] = item.get("brchNm", "")
-
-        if theab_no not in branch_screens.get(brch_no, {}):
-            branch_screens.setdefault(brch_no, {})[theab_no] = {
-                "name": item.get("theabExpoNm", ""),
-                "kind": item.get("theabKindCd", "NOR"),
-                "seats": int(item.get("totSeatCnt", 0) or 0),
-            }
+    # Step 1: Get full theater list from HTML
+    try:
+        all_branches = _megabox_all_branches(session)
+    except Exception:
+        logger.exception("MegaBox theater list page failed")
+        return []
 
     theaters: list[Theater] = []
 
-    # Step 2: Get branch details (address, coordinates)
-    for brch_no in branch_screens:
+    # Step 2: Fetch per-branch schedule + details
+    for brch_no, brch_name in all_branches.items():
         address, lat, lon = "", 0.0, 0.0
+        screens: list[Screen] = []
+
         try:
-            detail_resp = session.post(
+            resp = session.post(
                 MEGABOX_URL,
                 data={
                     "masterType": "brch",
                     "brchNo": brch_no,
                     "brchNo1": brch_no,
+                    "playDe": today,
                     "firstAt": "Y",
                 },
                 timeout=10,
             )
-            info = detail_resp.json().get("megaMap", {}).get("brchInfo", {})
-            address = info.get("roadNmAddr", "") or ""
+            mega = resp.json().get("megaMap", {})
+
+            from html import unescape as _unescape
+
+            # Branch info (address, coordinates)
+            info = mega.get("brchInfo", {})
+            address = _unescape(info.get("roadNmAddr", "") or "")
             lat = float(info.get("brchLat", 0) or 0)
             lon = float(info.get("brchLon", 0) or 0)
-        except Exception:
-            logger.debug("MegaBox detail failed for %s", brch_no)
 
-        screens: list[Screen] = []
-        for theab_no, sinfo in branch_screens[brch_no].items():
-            kind_cd = sinfo["kind"]
-            screen_type = MEGABOX_SCREEN_TYPE_MAP.get(kind_cd, SCREEN_TYPE_NORMAL)
-            screens.append(Screen(
-                screen_id=theab_no,
-                name=sinfo["name"],
-                screen_type=screen_type,
-                seat_count=sinfo["seats"],
-                is_special=screen_type in SPECIAL_TYPES,
-            ))
+            # Individual halls from schedule
+            seen: set[str] = set()
+            for item in mega.get("movieFormList", []):
+                theab_no = str(item.get("theabNo", ""))
+                if theab_no in seen:
+                    continue
+                seen.add(theab_no)
+
+                kind_cd = item.get("theabKindCd", "NOR")
+                screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
+                    kind_cd, SCREEN_TYPE_NORMAL,
+                )
+                screens.append(Screen(
+                    screen_id=theab_no,
+                    name=_unescape(item.get("theabExpoNm", "")),
+                    screen_type=screen_type,
+                    seat_count=int(item.get("totSeatCnt", 0) or 0),
+                    is_special=screen_type in SPECIAL_TYPES,
+                ))
+        except Exception:
+            logger.debug("MegaBox fetch failed for %s", brch_no)
 
         theaters.append(Theater(
             chain="megabox",
             theater_code=brch_no,
-            name=f"{branch_names.get(brch_no, '')} 메가박스",
+            name=f"{brch_name} 메가박스",
             address=address,
             latitude=lat,
             longitude=lon,
@@ -452,9 +467,9 @@ def sync_indie_cineq() -> list[Theater]:
         chain = "cineq" if t.get("Type") == "cineq" else "indie"
         theaters.append(Theater(
             chain=chain,
-            theater_code=t["TheaterName"],  # use name as code (no ID)
+            theater_code=t.get("TheaterCode", t["TheaterName"]),
             name=t["TheaterName"],
-            address=t.get("Region", ""),
+            address=t.get("Address", t.get("Region", "")),
             latitude=float(t.get("Latitude", 0)),
             longitude=float(t.get("Longitude", 0)),
             screens=[],  # no screen info available
