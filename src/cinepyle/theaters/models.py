@@ -1,13 +1,40 @@
-"""Theater and screen data models with JSON persistence."""
+"""Theater and screen data models with SQLAlchemy ORM + SQLite."""
+
+from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
+
+from sqlalchemy import (
+    Boolean,
+    Float,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    event,
+    select,
+    delete,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    mapped_column,
+    relationship,
+    sessionmaker,
+)
 
 logger = logging.getLogger(__name__)
 
-THEATERS_PATH = Path("data/theaters.json")
+DB_PATH = Path("data/theaters.db")
+SEED_PATH = Path("data/seed/theaters.db")
+LEGACY_JSON_PATH = Path("data/theaters.json")
 
 
 # ---------------------------------------------------------------------------
@@ -88,96 +115,239 @@ MEGABOX_SCREEN_TYPE_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Data models
+# SQLAlchemy base + models
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class Screen:
-    """A single screen (hall) within a theater."""
-
-    screen_id: str  # unique within theater (e.g., "018", "100_21관")
-    name: str  # display name (e.g., "IMAX관", "1관 (Laser)")
-    screen_type: str  # normalized type code
-    seat_count: int = 0
-    is_special: bool = False
+class Base(DeclarativeBase):
+    pass
 
 
-@dataclass
-class Theater:
+class Theater(Base):
     """A cinema theater belonging to a chain."""
 
-    chain: str  # "cgv" | "lotte" | "megabox" | "cineq" | "indie"
-    theater_code: str  # unique per chain
-    name: str  # display name (e.g., "CGV용산아이파크몰")
-    address: str = ""
-    latitude: float = 0.0
-    longitude: float = 0.0
-    screens: list[Screen] = field(default_factory=list)
+    __tablename__ = "theaters"
+
+    chain: Mapped[str] = mapped_column(String, primary_key=True)
+    theater_code: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    address: Mapped[str] = mapped_column(Text, default="")
+    latitude: Mapped[float] = mapped_column(Float, default=0.0)
+    longitude: Mapped[float] = mapped_column(Float, default=0.0)
+
+    screens: Mapped[list[Screen]] = relationship(
+        back_populates="theater",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     @property
     def key(self) -> str:
         """Unique key across all chains."""
         return f"{self.chain}:{self.theater_code}"
 
+    def __repr__(self) -> str:
+        return f"<Theater {self.chain}:{self.theater_code} {self.name}>"
+
+
+class Screen(Base):
+    """A single screen (hall) within a theater."""
+
+    __tablename__ = "screens"
+
+    chain: Mapped[str] = mapped_column(String, primary_key=True)
+    theater_code: Mapped[str] = mapped_column(String, primary_key=True)
+    screen_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    screen_type: Mapped[str] = mapped_column(String, default="normal")
+    seat_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_special: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chain", "theater_code"],
+            ["theaters.chain", "theaters.theater_code"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    theater: Mapped[Theater] = relationship(back_populates="screens")
+
+    def __repr__(self) -> str:
+        return f"<Screen {self.chain}:{self.theater_code}:{self.screen_id} {self.name}>"
+
+
+class SyncMeta(Base):
+    """Key-value metadata (e.g. last_sync_at)."""
+
+    __tablename__ = "sync_meta"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
 
 # ---------------------------------------------------------------------------
-# Database
+# Database manager
 # ---------------------------------------------------------------------------
 
 
 class TheaterDatabase:
-    """In-memory theater database with JSON persistence.
+    """Theater database with SQLAlchemy ORM + SQLite.
 
-    Follows the same load/save pattern as DigestSettings.
+    The public API is kept compatible with callers (sync.py, app.py,
+    sync_job.py, screen_alert.py, main.py).
     """
 
-    def __init__(self, theaters: list[Theater] | None = None) -> None:
-        self.theaters: list[Theater] = theaters or []
-        self._by_key: dict[str, Theater] = {}
-        self._rebuild_index()
+    def __init__(self, session: Session) -> None:
+        self._session = session
 
-    def _rebuild_index(self) -> None:
-        self._by_key = {t.key: t for t in self.theaters}
+    # -- read API ----------------------------------------------------------
+
+    @property
+    def theaters(self) -> list[Theater]:
+        """Return all theaters (with screens eagerly loaded)."""
+        stmt = select(Theater).order_by(Theater.chain, Theater.name)
+        return list(self._session.scalars(stmt))
 
     def get(self, chain: str, theater_code: str) -> Theater | None:
-        return self._by_key.get(f"{chain}:{theater_code}")
+        return self._session.get(Theater, (chain, theater_code))
 
     def get_by_chain(self, chain: str) -> list[Theater]:
-        return sorted(
-            [t for t in self.theaters if t.chain == chain],
-            key=lambda t: t.name,
+        stmt = (
+            select(Theater)
+            .where(Theater.chain == chain)
+            .order_by(Theater.name)
         )
+        return list(self._session.scalars(stmt))
+
+    # -- write API ---------------------------------------------------------
 
     def update_chain(self, chain: str, theaters: list[Theater]) -> None:
         """Replace all theaters for a given chain. Partial-update safe."""
-        self.theaters = [t for t in self.theaters if t.chain != chain]
-        self.theaters.extend(theaters)
-        self._rebuild_index()
+        self._session.execute(
+            delete(Screen).where(Screen.chain == chain)
+        )
+        self._session.execute(
+            delete(Theater).where(Theater.chain == chain)
+        )
+        self._session.flush()
 
-    @classmethod
-    def load(cls) -> "TheaterDatabase":
-        """Load from JSON file. Returns empty DB if file doesn't exist."""
-        if not THEATERS_PATH.exists():
-            return cls()
-        try:
-            raw = json.loads(THEATERS_PATH.read_text(encoding="utf-8"))
-            theaters = []
-            for t_data in raw.get("theaters", []):
-                screens_data = t_data.pop("screens", [])
-                screens = [Screen(**s) for s in screens_data]
-                theaters.append(Theater(**t_data, screens=screens))
-            return cls(theaters)
-        except (json.JSONDecodeError, TypeError, KeyError):
-            logger.warning("Corrupt theaters.json, starting fresh")
-            return cls()
+        for t in theaters:
+            # Ensure FK columns on child screens are populated
+            for s in t.screens:
+                s.chain = t.chain
+                s.theater_code = t.theater_code
+            self._session.merge(t)
+
+        self._session.commit()
+
+    # -- meta --------------------------------------------------------------
+
+    def get_meta(self, key: str) -> str | None:
+        row = self._session.get(SyncMeta, key)
+        return row.value if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        obj = self._session.get(SyncMeta, key)
+        if obj:
+            obj.value = value
+        else:
+            self._session.add(SyncMeta(key=key, value=value))
+        self._session.commit()
+
+    @property
+    def last_sync_at(self) -> str:
+        return self.get_meta("last_sync_at") or ""
+
+    @last_sync_at.setter
+    def last_sync_at(self, value: str) -> None:
+        self.set_meta("last_sync_at", value)
+
+    # -- lifecycle ---------------------------------------------------------
 
     def save(self) -> None:
-        """Persist to JSON file."""
-        THEATERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {"theaters": [asdict(t) for t in self.theaters]}
-        THEATERS_PATH.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        """Commit pending changes (kept for API compat)."""
+        self._session.commit()
+
+    def close(self) -> None:
+        self._session.close()
+
+    # -- factory -----------------------------------------------------------
+
+    @classmethod
+    def load(cls) -> TheaterDatabase:
+        """Open (or create) the SQLite database.
+
+        Priority:
+        1. Existing data/theaters.db → use as-is (user data)
+        2. Legacy data/theaters.json → migrate to SQLite, remove JSON
+        3. Seed data/seed/theaters.db → copy to data/theaters.db
+        4. Empty database
+        """
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        if not DB_PATH.exists():
+            if SEED_PATH.exists():
+                shutil.copy2(SEED_PATH, DB_PATH)
+                logger.info("Initialised theaters.db from seed data")
+
+        engine = create_engine(
+            f"sqlite:///{DB_PATH}",
+            echo=False,
+            connect_args={"check_same_thread": False},
         )
-        logger.info("Saved %d theaters to %s", len(self.theaters), THEATERS_PATH)
+
+        # Enable WAL and foreign keys on every connection
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        Base.metadata.create_all(engine)
+        session = sessionmaker(bind=engine)()
+
+        db = cls(session)
+
+        # Migrate legacy JSON if needed
+        if LEGACY_JSON_PATH.exists():
+            count = session.scalar(
+                select(Theater.chain).limit(1)
+            )
+            if count is None:
+                db._migrate_from_json()
+            try:
+                LEGACY_JSON_PATH.unlink()
+                logger.info("Removed legacy theaters.json")
+            except OSError:
+                pass
+
+        return db
+
+    def _migrate_from_json(self) -> None:
+        """One-time migration from theaters.json to SQLite."""
+        try:
+            raw = json.loads(LEGACY_JSON_PATH.read_text(encoding="utf-8"))
+            count = 0
+            for t_data in raw.get("theaters", []):
+                screens_data = t_data.pop("screens", [])
+                theater = Theater(**t_data)
+                for s_data in screens_data:
+                    theater.screens.append(Screen(
+                        chain=theater.chain,
+                        theater_code=theater.theater_code,
+                        **s_data,
+                    ))
+                self._session.add(theater)
+                count += 1
+
+            self._session.add(SyncMeta(
+                key="last_sync_at",
+                value=datetime.now(timezone.utc).isoformat(),
+            ))
+            self._session.commit()
+            logger.info("Migrated %d theaters from JSON to SQLite", count)
+        except Exception:
+            self._session.rollback()
+            logger.exception("Failed to migrate theaters.json")

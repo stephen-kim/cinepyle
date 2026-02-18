@@ -10,8 +10,9 @@ COPY pyproject.toml ./
 # Install dependencies without the project itself
 RUN uv sync --no-dev --no-install-project
 
-# Copy source code
+# Copy source code and seed data
 COPY src/ src/
+COPY data/seed/ data/seed/
 
 # Install the project
 RUN uv sync --no-dev

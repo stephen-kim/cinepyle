@@ -1,4 +1,4 @@
-"""FastAPI dashboard for digest and screen alert settings."""
+"""FastAPI dashboard for digest, screen alert, and sync settings."""
 
 import logging
 from pathlib import Path
@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from cinepyle.digest.settings import DigestSettings
 from cinepyle.notifications.screen_settings import ScreenAlertSettings
 from cinepyle.theaters.models import TheaterDatabase
+from cinepyle.theaters.sync_settings import SyncSettings
 
 logger = logging.getLogger(__name__)
 
@@ -32,28 +33,31 @@ def set_bot_context(job_queue, chat_id: str) -> None:
 
 def _base_context(request: Request, active_tab: str = "digest", **extra):
     """Build the common template context."""
-    return {
-        "request": request,
-        "settings": DigestSettings.load(),
-        "screen_settings": ScreenAlertSettings.load(),
-        "chains": _load_chains(),
-        "active_tab": active_tab,
-        "saved": False,
-        "test_sent": False,
-        "screen_saved": False,
-        "sync_triggered": False,
-        **extra,
-    }
-
-
-def _load_chains() -> dict[str, list]:
     db = TheaterDatabase.load()
-    return {
+    chains = {
         "cgv": db.get_by_chain("cgv"),
         "lotte": db.get_by_chain("lotte"),
         "megabox": db.get_by_chain("megabox"),
         "cineq": db.get_by_chain("cineq"),
         "indie": db.get_by_chain("indie"),
+    }
+    last_sync_at = db.last_sync_at
+    db.close()
+
+    return {
+        "request": request,
+        "settings": DigestSettings.load(),
+        "screen_settings": ScreenAlertSettings.load(),
+        "sync_settings": SyncSettings.load(),
+        "chains": chains,
+        "last_sync_at": last_sync_at,
+        "active_tab": active_tab,
+        "saved": False,
+        "test_sent": False,
+        "screen_saved": False,
+        "sync_saved": False,
+        "sync_triggered": False,
+        **extra,
     }
 
 
@@ -157,7 +161,40 @@ async def save_screen_settings(request: Request):
     return templates.TemplateResponse("index.html", ctx)
 
 
-@app.post("/screens/sync", response_class=HTMLResponse)
+# -----------------------------------------------------------------------
+# Sync settings
+# -----------------------------------------------------------------------
+
+
+@app.get("/sync", response_class=HTMLResponse)
+async def sync_page(request: Request):
+    ctx = _base_context(request, active_tab="sync")
+    return templates.TemplateResponse("index.html", ctx)
+
+
+@app.post("/sync/save", response_class=HTMLResponse)
+async def save_sync_settings(
+    request: Request,
+    sync_enabled: bool = Form(False),
+    sync_interval_days: int = Form(1),
+):
+    sync_settings = SyncSettings(
+        sync_enabled=sync_enabled,
+        sync_interval_days=max(1, min(sync_interval_days, 30)),
+    )
+    sync_settings.save()
+    logger.info(
+        "Sync settings saved: enabled=%s, interval=%d days",
+        sync_settings.sync_enabled,
+        sync_settings.sync_interval_days,
+    )
+
+    ctx = _base_context(request, active_tab="sync", sync_saved=True)
+    ctx["sync_settings"] = sync_settings
+    return templates.TemplateResponse("index.html", ctx)
+
+
+@app.post("/sync/trigger", response_class=HTMLResponse)
 async def trigger_sync(request: Request):
     if _job_queue is not None:
         from cinepyle.theaters.sync_job import theater_sync_job
@@ -169,5 +206,5 @@ async def trigger_sync(request: Request):
     else:
         logger.warning("Cannot trigger sync: bot not connected")
 
-    ctx = _base_context(request, active_tab="screens", sync_triggered=True)
+    ctx = _base_context(request, active_tab="sync", sync_triggered=True)
     return templates.TemplateResponse("index.html", ctx)

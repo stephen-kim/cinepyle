@@ -30,5 +30,6 @@ async def theater_sync_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"극장 {total_theaters}개 · 상영관 {total_screens}개"
             ),
         )
+        db.close()
     except Exception:
         logger.exception("Theater sync job failed")

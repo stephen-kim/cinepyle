@@ -13,7 +13,7 @@ import hmac
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -520,5 +520,6 @@ def sync_all_theaters() -> TheaterDatabase:
     except Exception:
         logger.exception("Failed to sync indie/cineq")
 
+    db.last_sync_at = datetime.now(timezone.utc).isoformat()
     db.save()
     return db
