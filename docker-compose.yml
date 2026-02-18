@@ -1,14 +1,6 @@
 services:
   cinepyle:
-    image: ghcr.io/stephen-kim/cinepyle:latest
-    pull_policy: always
+    build: .
     env_file:
       - .env
     restart: unless-stopped
-    volumes:
-      - cinepyle-data:/app/data
-    ports:
-      - "3847:3847"
-
-volumes:
-  cinepyle-data:

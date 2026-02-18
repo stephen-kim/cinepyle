@@ -4,21 +4,11 @@ version = "0.1.0"
 description = "Korean cinema Telegram bot - box office rankings, new movie alerts, IMAX notifications, and nearby theater finder"
 requires-python = ">=3.14"
 dependencies = [
-    "python-telegram-bot[job-queue]>=21.0",
+    "python-telegram-bot>=21.0",
     "python-dotenv>=1.1.0",
     "requests>=2.32.0",
     "beautifulsoup4>=4.13.0",
     "lxml>=5.3.0",
-    "playwright>=1.49.0",
-    "anthropic>=0.40.0",
-    "openai>=1.0.0",
-    "google-genai>=1.0.0",
-    "aiosqlite>=0.20.0",
-    "fastapi>=0.115.0",
-    "python-multipart>=0.0.18",
-    "uvicorn[standard]>=0.32.0",
-    "jinja2>=3.1.0",
-    "cryptography>=44.0.0",
 ]
 
 [project.scripts]
