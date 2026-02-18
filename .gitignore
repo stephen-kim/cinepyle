@@ -18,8 +18,9 @@ uv.lock
 .vscode/
 .idea/
 
-# Data
-data/
+# Data (runtime — persisted via Docker volume)
+data/*
+!data/seed/
 
 # Claude
 .claude/
