@@ -9,3 +9,6 @@ TELEGRAM_CHAT_ID: str = os.environ["TELEGRAM_CHAT_ID"]
 KOBIS_API_KEY: str = os.environ["KOFIC_API_KEY"]
 WATCHA_EMAIL: str = os.environ["WATCHA_EMAIL"]
 WATCHA_PASSWORD: str = os.environ["WATCHA_PASSWORD"]
+
+# Dashboard (optional)
+DASHBOARD_PORT: int = int(os.environ.get("DASHBOARD_PORT", "8080"))
