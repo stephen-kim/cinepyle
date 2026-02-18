@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cinepyle Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      line-height: 1.6;
+      padding: 2rem;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #fff; }
+    h2 {
+      font-size: 1.1rem; margin: 1.5rem 0 0.75rem; color: #ccc;
+      border-bottom: 1px solid #333; padding-bottom: 0.4rem;
+    }
+    label { display: block; margin: 0.4rem 0; cursor: pointer; }
+    input[type="text"], input[type="password"], input[type="number"],
+    textarea, select {
+      width: 100%; padding: 0.5rem 0.7rem; background: #1a1a1a;
+      border: 1px solid #333; border-radius: 6px; color: #e0e0e0; font-size: 0.9rem;
+      margin-top: 0.25rem;
+    }
+    input[type="number"] { width: 80px; }
+    textarea { min-height: 80px; resize: vertical; }
+    select { width: auto; min-width: 100px; }
+    .row { display: flex; gap: 1rem; align-items: center; margin: 0.5rem 0; }
+    button {
+      padding: 0.6rem 1.4rem; border: none; border-radius: 6px;
+      font-size: 0.9rem; cursor: pointer; margin-top: 0.5rem;
+    }
+    button.primary { background: #2563eb; color: #fff; }
+    button.primary:hover { background: #1d4ed8; }
+    button.secondary { background: #333; color: #e0e0e0; }
+    button.secondary:hover { background: #444; }
+    .alert { padding: 0.6rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
+    .alert-success { background: #14532d; color: #86efac; }
+    .alert-info { background: #1e3a5f; color: #93c5fd; }
+    .hint { font-size: 0.8rem; color: #888; margin-top: 0.2rem; }
+    .actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 0; margin-bottom: 1.5rem; }
+    .tab {
+      flex: 1; padding: 0.7rem; border: 1px solid #333;
+      background: #1a1a1a; color: #888; cursor: pointer;
+      font-size: 0.9rem; border-bottom: 2px solid transparent;
+    }
+    .tab:first-child { border-radius: 6px 0 0 6px; }
+    .tab:last-child { border-radius: 0 6px 6px 0; }
+    .tab.active { background: #222; color: #fff; border-bottom-color: #2563eb; }
+
+    /* Screen alert styles */
+    details.chain-group { margin: 0.5rem 0; }
+    details.chain-group > summary {
+      cursor: pointer; font-weight: 600; font-size: 1rem;
+      color: #ccc; padding: 0.4rem 0;
+    }
+    details.theater-group { margin: 0.3rem 0; padding-left: 1rem; }
+    details.theater-group > summary {
+      cursor: pointer; font-weight: 500; font-size: 0.9rem;
+      color: #aaa; padding: 0.2rem 0;
+    }
+    .theater-addr { font-size: 0.75rem; color: #666; margin-left: 0.5rem; }
+    .screen-label {
+      display: block; margin: 0.15rem 0; padding-left: 2rem; font-size: 0.85rem;
+    }
+    .screen-label.special { color: #93c5fd; }
+    .badge {
+      font-size: 0.65rem; background: #2563eb33; color: #93c5fd;
+      padding: 0.05rem 0.4rem; border-radius: 3px; margin-left: 0.3rem;
+      text-transform: uppercase;
+    }
+    .seats { font-size: 0.7rem; color: #666; margin-left: 0.3rem; }
+    .no-data { font-size: 0.85rem; color: #666; padding: 1rem 0; }
+
+    /* Sync info */
+    .sync-info {
+      background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+      padding: 0.8rem 1rem; margin: 0.75rem 0;
+    }
+    .sync-info .label { font-size: 0.8rem; color: #888; }
+    .sync-info .value { font-size: 0.95rem; color: #e0e0e0; margin-top: 0.1rem; }
+    .sync-stats { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+    .sync-stats .stat { text-align: center; }
+    .sync-stats .stat .num { font-size: 1.3rem; font-weight: 600; color: #fff; }
+    .sync-stats .stat .lbl { font-size: 0.75rem; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Cinepyle Dashboard</h1>
+
+  <!-- Tab Navigation -->
+  <nav class="tabs">
+    <button type="button" class="tab {% if active_tab == 'digest' %}active{% endif %}"
+      onclick="switchTab('digest')">다이제스트</button>
+    <button type="button" class="tab {% if active_tab == 'screens' %}active{% endif %}"
+      onclick="switchTab('screens')">상영관 알림</button>
+    <button type="button" class="tab {% if active_tab == 'sync' %}active{% endif %}"
+      onclick="switchTab('sync')">극장 동기화</button>
+  </nav>
+
+  <!-- ============================================================ -->
+  <!-- Tab: Digest -->
+  <!-- ============================================================ -->
+  <div id="tab-digest" style="{% if active_tab != 'digest' %}display:none{% endif %}">
+
+    {% if saved %}
+    <div class="alert alert-success">설정이 저장되었습니다.</div>
+    {% endif %}
+    {% if test_sent %}
+    <div class="alert alert-info">테스트 다이제스트를 전송합니다. 텔레그램을 확인하세요.</div>
+    {% endif %}
+
+    <form method="post" action="/settings">
+      <h2>뉴스 소스</h2>
+      <label>
+        <input type="checkbox" name="google_enabled" value="true"
+          {{ "checked" if settings.sources_enabled.get("google", True) }}>
+        Google 영화뉴스
+      </label>
+      <label>
+        <input type="checkbox" name="cine21_enabled" value="true"
+          {{ "checked" if settings.sources_enabled.get("cine21", True) }}>
+        Cine21
+      </label>
+      <label>
+        <input type="checkbox" name="watcha_enabled" value="true"
+          {{ "checked" if settings.sources_enabled.get("watcha", True) }}>
+        Watcha 매거진
+      </label>
+
+      <h2>스케줄</h2>
+      <label>
+        <input type="checkbox" name="schedule_enabled" value="true"
+          {{ "checked" if settings.schedule_enabled }}>
+        다이제스트 활성화
+      </label>
+      <div class="row">
+        <label>
+          시간 (KST)
+          <input type="number" name="schedule_hour" min="0" max="23"
+            value="{{ settings.schedule_hour }}">
+        </label>
+        <label>
+          분
+          <input type="number" name="schedule_minute" min="0" max="59"
+            value="{{ settings.schedule_minute }}">
+        </label>
+      </div>
+
+      <h2>AI 설정</h2>
+      <label>
+        LLM Provider
+        <select name="llm_provider">
+          <option value="openai" {{ "selected" if settings.llm_provider == "openai" }}>OpenAI (GPT-4o mini)</option>
+          <option value="anthropic" {{ "selected" if settings.llm_provider == "anthropic" }}>Anthropic (Claude 3.5 Haiku)</option>
+          <option value="google" {{ "selected" if settings.llm_provider == "google" }}>Google (Gemini Flash)</option>
+        </select>
+      </label>
+      <label>
+        API Key
+        <input type="password" name="llm_api_key"
+          placeholder="{{ '설정됨' if settings.llm_api_key else '입력하세요' }}"
+          autocomplete="off">
+      </label>
+      <p class="hint">선택한 LLM provider의 API key를 입력하세요. 비워두면 기존 키를 유지합니다.</p>
+
+      <h2>선별 기준</h2>
+      <label>
+        취향 및 관심사
+        <textarea name="preferences" placeholder="예: 한국 독립영화 위주로, 리뷰 선호, 인터뷰 좋아함">{{ settings.preferences }}</textarea>
+      </label>
+      <p class="hint">AI가 기사를 선별할 때 참고할 취향을 자유롭게 적어주세요.</p>
+
+      <div class="actions">
+        <button type="submit" class="primary">저장</button>
+      </div>
+    </form>
+
+    <form method="post" action="/test-digest" style="margin-top: 1rem;">
+      <button type="submit" class="secondary">테스트 다이제스트 전송</button>
+    </form>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Tab: Screen Alerts -->
+  <!-- ============================================================ -->
+  <div id="tab-screens" style="{% if active_tab != 'screens' %}display:none{% endif %}">
+
+    {% if screen_saved %}
+    <div class="alert alert-success">상영관 알림 설정이 저장되었습니다.</div>
+    {% endif %}
+
+    <form method="post" action="/screens/save">
+      <h2>알림 설정</h2>
+      <label>
+        <input type="checkbox" name="screen_alerts_enabled" value="true"
+          {{ "checked" if screen_settings.alerts_enabled }}>
+        상영관 알림 활성화
+      </label>
+      <div class="row">
+        <label>
+          체크 간격 (분)
+          <input type="number" name="check_interval_minutes" min="10" max="120"
+            value="{{ screen_settings.check_interval_minutes }}">
+        </label>
+      </div>
+      <p class="hint">감시 중인 상영관의 스케줄을 확인하는 주기입니다 (10~120분).</p>
+
+      <h2>감시 상영관 선택</h2>
+
+      {% set chain_labels = {"cgv": "CGV", "lotte": "롯데시네마", "megabox": "메가박스", "cineq": "씨네Q", "indie": "독립영화관"} %}
+
+      {% for chain_key in ["cgv", "lotte", "megabox", "cineq", "indie"] %}
+        {% set chain_theaters = chains.get(chain_key, []) %}
+        {% if chain_theaters %}
+        <details class="chain-group">
+          <summary>{{ chain_labels[chain_key] }} ({{ chain_theaters|length }}개 극장)</summary>
+
+          {% for theater in chain_theaters %}
+            {% if theater.screens %}
+            <details class="theater-group">
+              <summary>
+                {{ theater.name }}
+                {% if theater.address %}
+                <span class="theater-addr">{{ theater.address[:30] }}{% if theater.address|length > 30 %}...{% endif %}</span>
+                {% endif %}
+              </summary>
+              {% for screen in theater.screens %}
+              <label class="screen-label {% if screen.is_special %}special{% endif %}">
+                <input type="checkbox" name="watched_screens"
+                  value="{{ theater.chain }}:{{ theater.theater_code }}:{{ screen.screen_id }}"
+                  {{ "checked" if screen_settings.is_watching(theater.chain ~ ':' ~ theater.theater_code ~ ':' ~ screen.screen_id) }}>
+                {{ screen.name }}
+                {% if screen.screen_type != "normal" %}
+                  <span class="badge">{{ screen.screen_type }}</span>
+                {% endif %}
+                {% if screen.seat_count > 0 %}
+                  <span class="seats">{{ screen.seat_count }}석</span>
+                {% endif %}
+              </label>
+              {% endfor %}
+            </details>
+            {% else %}
+            <div style="padding-left: 1rem;">
+              <span class="no-data">{{ theater.name }}</span>
+            </div>
+            {% endif %}
+          {% endfor %}
+
+        </details>
+        {% endif %}
+      {% endfor %}
+
+      {% set total_theaters = (chains.get("cgv", [])|length) + (chains.get("lotte", [])|length) + (chains.get("megabox", [])|length) + (chains.get("cineq", [])|length) + (chains.get("indie", [])|length) %}
+      {% if total_theaters == 0 %}
+      <p class="no-data">극장 데이터가 없습니다. 극장 동기화 탭에서 동기화를 실행하세요.</p>
+      {% endif %}
+
+      <div class="actions">
+        <button type="submit" class="primary">저장</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Tab: Sync Settings -->
+  <!-- ============================================================ -->
+  <div id="tab-sync" style="{% if active_tab != 'sync' %}display:none{% endif %}">
+
+    {% if sync_saved %}
+    <div class="alert alert-success">동기화 설정이 저장되었습니다. 변경된 주기는 재시작 후 적용됩니다.</div>
+    {% endif %}
+    {% if sync_triggered %}
+    <div class="alert alert-info">극장 동기화가 시작되었습니다. 잠시 후 새로고침하세요.</div>
+    {% endif %}
+
+    <h2>현재 상태</h2>
+
+    {% set total_theaters = (chains.get("cgv", [])|length) + (chains.get("lotte", [])|length) + (chains.get("megabox", [])|length) + (chains.get("cineq", [])|length) + (chains.get("indie", [])|length) %}
+    {% set cgv_screens = chains.get("cgv", [])|map(attribute='screens')|map('length')|sum %}
+    {% set lotte_screens = chains.get("lotte", [])|map(attribute='screens')|map('length')|sum %}
+    {% set mega_screens = chains.get("megabox", [])|map(attribute='screens')|map('length')|sum %}
+    {% set total_screens = cgv_screens + lotte_screens + mega_screens %}
+
+    <div class="sync-stats" style="margin: 0.75rem 0;">
+      <div class="stat">
+        <div class="num">{{ total_theaters }}</div>
+        <div class="lbl">극장</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ total_screens }}</div>
+        <div class="lbl">상영관</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ chains.get("cgv", [])|length }}</div>
+        <div class="lbl">CGV</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ chains.get("lotte", [])|length }}</div>
+        <div class="lbl">롯데</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ chains.get("megabox", [])|length }}</div>
+        <div class="lbl">메가박스</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ chains.get("cineq", [])|length + chains.get("indie", [])|length }}</div>
+        <div class="lbl">인디/씨네Q</div>
+      </div>
+    </div>
+
+    <div class="sync-info">
+      <div class="label">마지막 동기화</div>
+      <div class="value">
+        {% if last_sync_at %}
+          {{ last_sync_at[:19] | replace("T", " ") }} UTC
+        {% else %}
+          아직 동기화 되지 않음
+        {% endif %}
+      </div>
+    </div>
+
+    <form method="post" action="/sync/save">
+      <h2>동기화 설정</h2>
+      <label>
+        <input type="checkbox" name="sync_enabled" value="true"
+          {{ "checked" if sync_settings.sync_enabled }}>
+        자동 동기화 활성화
+      </label>
+      <div class="row">
+        <label>
+          동기화 간격 (일)
+          <input type="number" name="sync_interval_days" min="1" max="30"
+            value="{{ sync_settings.sync_interval_days }}">
+        </label>
+      </div>
+      <p class="hint">극장 및 상영관 정보를 갱신하는 주기입니다 (1~30일). 변경 시 재시작 필요.</p>
+
+      <div class="actions">
+        <button type="submit" class="primary">저장</button>
+      </div>
+    </form>
+
+    <form method="post" action="/sync/trigger" style="margin-top: 1rem;">
+      <button type="submit" class="secondary">수동 동기화 실행</button>
+    </form>
+  </div>
+
+  <script>
+    function switchTab(tab) {
+      var tabs = ['digest', 'screens', 'sync'];
+      tabs.forEach(function(t) {
+        document.getElementById('tab-' + t).style.display = t === tab ? '' : 'none';
+      });
+      document.querySelectorAll('.tab').forEach(function(el, i) {
+        el.classList.toggle('active', tabs[i] === tab);
+      });
+    }
+  </script>
+</body>
+</html>

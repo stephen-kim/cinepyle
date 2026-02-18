@@ -1,0 +1,353 @@
+"""Theater and screen data models with SQLAlchemy ORM + SQLite."""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from sqlalchemy import (
+    Boolean,
+    Float,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    event,
+    select,
+    delete,
+)
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    mapped_column,
+    relationship,
+    sessionmaker,
+)
+
+logger = logging.getLogger(__name__)
+
+DB_PATH = Path("data/theaters.db")
+SEED_PATH = Path("data/seed/theaters.db")
+LEGACY_JSON_PATH = Path("data/theaters.json")
+
+
+# ---------------------------------------------------------------------------
+# Screen type constants
+# ---------------------------------------------------------------------------
+
+SCREEN_TYPE_NORMAL = "normal"
+SCREEN_TYPE_IMAX = "imax"
+SCREEN_TYPE_4DX = "4dx"
+SCREEN_TYPE_SCREENX = "screenx"
+SCREEN_TYPE_DOLBY_ATMOS = "dolby_atmos"
+SCREEN_TYPE_DOLBY_CINEMA = "dolby_cinema"
+SCREEN_TYPE_SUPERPLEX = "superplex"
+SCREEN_TYPE_CHARLOTTE = "charlotte"
+SCREEN_TYPE_COMFORT = "comfort"
+SCREEN_TYPE_BOUTIQUE = "boutique"
+SCREEN_TYPE_RECLINER = "recliner"
+SCREEN_TYPE_PREMIUM = "premium"
+
+SPECIAL_TYPES: set[str] = {
+    SCREEN_TYPE_IMAX,
+    SCREEN_TYPE_4DX,
+    SCREEN_TYPE_SCREENX,
+    SCREEN_TYPE_DOLBY_ATMOS,
+    SCREEN_TYPE_DOLBY_CINEMA,
+    SCREEN_TYPE_SUPERPLEX,
+    SCREEN_TYPE_CHARLOTTE,
+    SCREEN_TYPE_BOUTIQUE,
+    SCREEN_TYPE_PREMIUM,
+}
+
+# CGV tcscnsGradNm (screen grade name) → type
+CGV_GRADE_NAME_MAP: dict[str, str] = {
+    "아이맥스": SCREEN_TYPE_IMAX,
+    "IMAX": SCREEN_TYPE_IMAX,
+    "4DX": SCREEN_TYPE_4DX,
+    "SCREENX": SCREEN_TYPE_SCREENX,
+    "DOLBY ATMOS": SCREEN_TYPE_DOLBY_ATMOS,
+    "돌비 애트모스": SCREEN_TYPE_DOLBY_ATMOS,
+}
+
+# CGV rcmGradList gradCd → type
+CGV_GRAD_CD_MAP: dict[str, str] = {
+    "02": SCREEN_TYPE_4DX,
+    "03": SCREEN_TYPE_IMAX,
+    "04": SCREEN_TYPE_SCREENX,
+    "07": SCREEN_TYPE_DOLBY_ATMOS,
+}
+
+# Lotte ScreenDivisionCode → type
+LOTTE_SCREEN_TYPE_MAP: dict[str, str] = {
+    "100": SCREEN_TYPE_NORMAL,
+    "300": SCREEN_TYPE_CHARLOTTE,
+    "301": SCREEN_TYPE_CHARLOTTE,  # 샤롯데 프라이빗
+    "901": SCREEN_TYPE_PREMIUM,    # 광음시네마
+    "902": SCREEN_TYPE_PREMIUM,    # 광음LED
+    "940": SCREEN_TYPE_SUPERPLEX,
+    "960": SCREEN_TYPE_NORMAL,     # 씨네패밀리
+    "980": SCREEN_TYPE_PREMIUM,    # 수퍼LED(일반)
+    "986": SCREEN_TYPE_RECLINER,
+    "988": SCREEN_TYPE_RECLINER,   # 수퍼LED(리클)
+}
+
+# MegaBox theabKindCd → type
+MEGABOX_SCREEN_TYPE_MAP: dict[str, str] = {
+    "NOR": SCREEN_TYPE_NORMAL,
+    "CFT": SCREEN_TYPE_COMFORT,
+    "DBC": SCREEN_TYPE_DOLBY_CINEMA,
+    "DVA": SCREEN_TYPE_DOLBY_CINEMA,  # Dolby Vision+Atmos
+    "LUMINEON": SCREEN_TYPE_PREMIUM,  # MEGA LED
+    "MKB": SCREEN_TYPE_PREMIUM,       # 만경관
+    "MX": SCREEN_TYPE_DOLBY_ATMOS,
+    "MX4D": SCREEN_TYPE_4DX,          # MX4D motion seats
+    "RCL": SCREEN_TYPE_RECLINER,
+    "TBQ": SCREEN_TYPE_BOUTIQUE,      # 부티크
+    "TBS": SCREEN_TYPE_BOUTIQUE,      # 부티크 스위트
+}
+
+
+# ---------------------------------------------------------------------------
+# SQLAlchemy base + models
+# ---------------------------------------------------------------------------
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Theater(Base):
+    """A cinema theater belonging to a chain."""
+
+    __tablename__ = "theaters"
+
+    chain: Mapped[str] = mapped_column(String, primary_key=True)
+    theater_code: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    address: Mapped[str] = mapped_column(Text, default="")
+    latitude: Mapped[float] = mapped_column(Float, default=0.0)
+    longitude: Mapped[float] = mapped_column(Float, default=0.0)
+
+    screens: Mapped[list[Screen]] = relationship(
+        back_populates="theater",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    @property
+    def key(self) -> str:
+        """Unique key across all chains."""
+        return f"{self.chain}:{self.theater_code}"
+
+    def __repr__(self) -> str:
+        return f"<Theater {self.chain}:{self.theater_code} {self.name}>"
+
+
+class Screen(Base):
+    """A single screen (hall) within a theater."""
+
+    __tablename__ = "screens"
+
+    chain: Mapped[str] = mapped_column(String, primary_key=True)
+    theater_code: Mapped[str] = mapped_column(String, primary_key=True)
+    screen_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    screen_type: Mapped[str] = mapped_column(String, default="normal")
+    seat_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_special: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["chain", "theater_code"],
+            ["theaters.chain", "theaters.theater_code"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    theater: Mapped[Theater] = relationship(back_populates="screens")
+
+    def __repr__(self) -> str:
+        return f"<Screen {self.chain}:{self.theater_code}:{self.screen_id} {self.name}>"
+
+
+class SyncMeta(Base):
+    """Key-value metadata (e.g. last_sync_at)."""
+
+    __tablename__ = "sync_meta"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Database manager
+# ---------------------------------------------------------------------------
+
+
+class TheaterDatabase:
+    """Theater database with SQLAlchemy ORM + SQLite.
+
+    The public API is kept compatible with callers (sync.py, app.py,
+    sync_job.py, screen_alert.py, main.py).
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    # -- read API ----------------------------------------------------------
+
+    @property
+    def theaters(self) -> list[Theater]:
+        """Return all theaters (with screens eagerly loaded)."""
+        stmt = select(Theater).order_by(Theater.chain, Theater.name)
+        return list(self._session.scalars(stmt))
+
+    def get(self, chain: str, theater_code: str) -> Theater | None:
+        return self._session.get(Theater, (chain, theater_code))
+
+    def get_by_chain(self, chain: str) -> list[Theater]:
+        stmt = (
+            select(Theater)
+            .where(Theater.chain == chain)
+            .order_by(Theater.name)
+        )
+        return list(self._session.scalars(stmt))
+
+    # -- write API ---------------------------------------------------------
+
+    def update_chain(self, chain: str, theaters: list[Theater]) -> None:
+        """Replace all theaters for a given chain. Partial-update safe."""
+        self._session.execute(
+            delete(Screen).where(Screen.chain == chain)
+        )
+        self._session.execute(
+            delete(Theater).where(Theater.chain == chain)
+        )
+        self._session.flush()
+
+        for t in theaters:
+            # Ensure FK columns on child screens are populated
+            for s in t.screens:
+                s.chain = t.chain
+                s.theater_code = t.theater_code
+            self._session.merge(t)
+
+        self._session.commit()
+
+    # -- meta --------------------------------------------------------------
+
+    def get_meta(self, key: str) -> str | None:
+        row = self._session.get(SyncMeta, key)
+        return row.value if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        obj = self._session.get(SyncMeta, key)
+        if obj:
+            obj.value = value
+        else:
+            self._session.add(SyncMeta(key=key, value=value))
+        self._session.commit()
+
+    @property
+    def last_sync_at(self) -> str:
+        return self.get_meta("last_sync_at") or ""
+
+    @last_sync_at.setter
+    def last_sync_at(self, value: str) -> None:
+        self.set_meta("last_sync_at", value)
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def save(self) -> None:
+        """Commit pending changes (kept for API compat)."""
+        self._session.commit()
+
+    def close(self) -> None:
+        self._session.close()
+
+    # -- factory -----------------------------------------------------------
+
+    @classmethod
+    def load(cls) -> TheaterDatabase:
+        """Open (or create) the SQLite database.
+
+        Priority:
+        1. Existing data/theaters.db → use as-is (user data)
+        2. Legacy data/theaters.json → migrate to SQLite, remove JSON
+        3. Seed data/seed/theaters.db → copy to data/theaters.db
+        4. Empty database
+        """
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        if not DB_PATH.exists():
+            if SEED_PATH.exists():
+                shutil.copy2(SEED_PATH, DB_PATH)
+                logger.info("Initialised theaters.db from seed data")
+
+        engine = create_engine(
+            f"sqlite:///{DB_PATH}",
+            echo=False,
+            connect_args={"check_same_thread": False},
+        )
+
+        # Enable WAL and foreign keys on every connection
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        Base.metadata.create_all(engine)
+        session = sessionmaker(bind=engine)()
+
+        db = cls(session)
+
+        # Migrate legacy JSON if needed
+        if LEGACY_JSON_PATH.exists():
+            count = session.scalar(
+                select(Theater.chain).limit(1)
+            )
+            if count is None:
+                db._migrate_from_json()
+            try:
+                LEGACY_JSON_PATH.unlink()
+                logger.info("Removed legacy theaters.json")
+            except OSError:
+                pass
+
+        return db
+
+    def _migrate_from_json(self) -> None:
+        """One-time migration from theaters.json to SQLite."""
+        try:
+            raw = json.loads(LEGACY_JSON_PATH.read_text(encoding="utf-8"))
+            count = 0
+            for t_data in raw.get("theaters", []):
+                screens_data = t_data.pop("screens", [])
+                theater = Theater(**t_data)
+                for s_data in screens_data:
+                    theater.screens.append(Screen(
+                        chain=theater.chain,
+                        theater_code=theater.theater_code,
+                        **s_data,
+                    ))
+                self._session.add(theater)
+                count += 1
+
+            self._session.add(SyncMeta(
+                key="last_sync_at",
+                value=datetime.now(timezone.utc).isoformat(),
+            ))
+            self._session.commit()
+            logger.info("Migrated %d theaters from JSON to SQLite", count)
+        except Exception:
+            self._session.rollback()
+            logger.exception("Failed to migrate theaters.json")

@@ -1,99 +1,30 @@
-"""CGV theater data access and schedule fetching with self-healing.
+"""CGV theater data access and schedule fetching.
 
 Note: CGV migrated to a Next.js-based site in July 2025.
 The old iframeTheater.aspx endpoint no longer works.
-Schedule fetching uses Playwright to render the CSR page,
-with self-healing extraction via Claude API.
+Schedule fetching uses the new CGV system URLs.
 """
 
 import logging
 import math
+from datetime import datetime
 
-from cinepyle.config import (
-    ANTHROPIC_API_KEY,
-    GEMINI_API_KEY,
-    HEALING_DB_PATH,
-    OPENAI_API_KEY,
-)
-from cinepyle.healing.engine import HealingEngine
-from cinepyle.healing.llm import resolve_llm_config
-from cinepyle.healing.strategy import ExtractionTask
-from cinepyle.scrapers.browser import get_page
+import requests
+
 from cinepyle.theaters.data_cgv import data
 
 logger = logging.getLogger(__name__)
 
-CGV_THEATER_BASE_URL = "https://cgv.co.kr/cnm/bzplcCgv"
-
-# --- Healing setup ---
-
-_engine: HealingEngine | None = None
-
-
-def _get_engine() -> HealingEngine:
-    global _engine
-    if _engine is None:
-        try:
-            from cinepyle.dashboard.settings_manager import SettingsManager
-            mgr = SettingsManager.get_instance()
-            anthropic_key = mgr.get("credential:anthropic_api_key") or ANTHROPIC_API_KEY
-            openai_key = mgr.get("credential:openai_api_key") or OPENAI_API_KEY
-            gemini_key = mgr.get("credential:gemini_api_key") or GEMINI_API_KEY
-            priority = mgr.get_llm_priority()
-        except (RuntimeError, ImportError):
-            anthropic_key, openai_key, gemini_key = ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY
-            priority = None
-        _engine = HealingEngine(
-            resolve_llm_config(anthropic_key, openai_key, gemini_key, priority=priority),
-            HEALING_DB_PATH,
-        )
-    return _engine
-
-
-CGV_SCHEDULE_TASK = ExtractionTask(
-    task_id="cgv_movie_schedule",
-    url=f"{CGV_THEATER_BASE_URL}/...",
-    description=(
-        "This is a CGV movie theater schedule page. Extract the list of movies "
-        "and their showtimes. Return an array of objects, each with a 'title' "
-        "(movie name in Korean) and 'times' (array of showtime strings like "
-        "'10:30', '13:00'). Group showtimes under their movie title."
+CGV_SCHEDULE_API = "https://cgv.co.kr/api/schedules"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
     ),
-    expected_type="list[dict]",
-    validation_hint=(
-        "Should be an array of {title: string, times: string[]}. "
-        "Each title is a Korean movie name. Each time is HH:MM format."
-    ),
-    example_result='[{"title": "인터스텔라", "times": ["10:30", "14:00"]}]',
-)
-
-HARDCODED_SCHEDULE_JS = """(() => {
-    const allText = document.body.innerText;
-    const lines = allText.split('\\n').map(l => l.trim()).filter(l => l);
-
-    let currentMovie = null;
-    const timePattern = /^\\d{1,2}:\\d{2}/;
-    const result = [];
-
-    for (const line of lines) {
-        if (line.length < 2) continue;
-        if (timePattern.test(line) && currentMovie) {
-            currentMovie.times.push(line);
-        } else if (line.length > 2 && !timePattern.test(line)
-                   && !line.match(/^[0-9]+$/)
-                   && !line.match(/^(관|석|층|원|명)$/)
-                   && line.length < 50) {
-            if (currentMovie && currentMovie.times.length > 0) {
-                result.push(currentMovie);
-            }
-            currentMovie = { title: line, times: [] };
-        }
-    }
-    if (currentMovie && currentMovie.times.length > 0) {
-        result.push(currentMovie);
-    }
-    return result.length > 0 ? result : null;
-})()"""
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://cgv.co.kr/",
+}
 
 
 def get_theater_list() -> list[dict]:
@@ -119,56 +50,50 @@ def filter_nearest(
     return [theater for _, theater in with_distance[:n]]
 
 
-async def get_movie_schedule(
-    area_code: str, theater_code: str, play_date: str | None = None
-) -> str:
-    """Fetch movie schedule for a CGV theater.
+def get_movie_schedule(area_code: str, theater_code: str) -> str:
+    """Fetch today's movie schedule for a CGV theater.
 
-    Args:
-        area_code: CGV region code (e.g. "01")
-        theater_code: CGV theater code (e.g. "0013")
-        play_date: Date string in YYYYMMDD format. Defaults to today.
-            Note: CGV's URL-based schedule may not fully support date selection.
-
-    Uses Playwright to render the Next.js-based theater page and
-    the self-healing engine to extract schedule data. If the hardcoded
-    extraction breaks, Claude generates a new strategy automatically.
+    Uses the new CGV API (post-July 2025 migration).
+    Returns a formatted string with movie titles and showtimes.
     """
-    theater_url = f"{CGV_THEATER_BASE_URL}/{area_code}{theater_code}"
-    if play_date:
-        theater_url += f"?date={play_date}"
+    today = datetime.now().strftime("%Y%m%d")
 
-    page = await get_page()
     try:
-        await page.goto(theater_url, wait_until="networkidle", timeout=30000)
-        await page.wait_for_timeout(2000)
-
-        # Use healing engine for schedule extraction
-        engine = _get_engine()
-        schedule = await engine.extract(
-            page, CGV_SCHEDULE_TASK, hardcoded_js=HARDCODED_SCHEDULE_JS
+        resp = requests.get(
+            CGV_SCHEDULE_API,
+            params={"theaterCode": theater_code, "date": today},
+            headers=HEADERS,
+            timeout=10,
         )
-
-        if not schedule:
+        if resp.status_code != 200:
+            logger.warning("CGV schedule API returned %s", resp.status_code)
             return (
-                "상영 중인 영화가 없거나 스케줄을 파싱할 수 없습니다.\n"
-                f"직접 확인: {theater_url}"
+                "CGV 상영시간표를 가져올 수 없습니다.\n"
+                f"직접 확인: https://cgv.co.kr/cnm/bzplcCgv/{area_code}{theater_code}"
             )
 
+        data = resp.json()
         lines = []
-        for movie in schedule:
-            lines.append("============================")
-            lines.append(f"* {movie['title']}")
-            for time_info in movie["times"]:
-                lines.append(f"  {time_info}")
 
-        return "\n".join(lines)
+        for movie in data.get("movies", data.get("schedules", [])):
+            title = movie.get("movieName", movie.get("title", ""))
+            lines.append("============================")
+            lines.append(f"* {title}")
+            lines.append(" 상영시간   빈좌석")
+
+            halls = movie.get("halls", movie.get("screenings", []))
+            for hall in halls:
+                times = hall.get("times", hall.get("showtimes", []))
+                for t in times:
+                    start = t.get("startTime", t.get("time", ""))
+                    seats = t.get("remainSeats", t.get("seats", ""))
+                    lines.append(f"  {start}      {seats}")
+
+        return "\n".join(lines) if lines else "상영 중인 영화가 없습니다."
 
     except Exception:
-        logger.exception("Failed to fetch CGV schedule via Playwright")
+        logger.exception("Failed to fetch CGV schedule")
         return (
             "CGV 상영시간표를 가져올 수 없습니다.\n"
-            f"직접 확인: {theater_url}"
+            f"직접 확인: https://cgv.co.kr/cnm/bzplcCgv/{area_code}{theater_code}"
         )
-    finally:
-        await page.close()

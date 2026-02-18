@@ -64,20 +64,12 @@ def filter_nearest(
     return [theater for _, theater in with_distance[:n]]
 
 
-def get_movie_schedule(theater_id: str, play_date: str | None = None) -> dict:
-    """Fetch movie schedule for a Lotte Cinema theater.
-
-    Args:
-        theater_id: Lotte Cinema theater ID (e.g. "1|1|1016")
-        play_date: Date string in YYYYMMDD format. Defaults to today.
+def get_movie_schedule(theater_id: str) -> dict:
+    """Fetch today's movie schedule for a Lotte Cinema theater.
 
     Returns a dict: {movie_code: {"Name": str, "Schedules": [{"StartTime": str, "RemainingSeat": str}]}}
     """
-    if play_date:
-        # Convert YYYYMMDD to YYYY-MM-DD for Lotte API
-        today = f"{play_date[:4]}-{play_date[4:6]}-{play_date[6:8]}"
-    else:
-        today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
     payload = _make_payload(
         MethodName="GetPlaySequence",
         playDate=today,

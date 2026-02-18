@@ -1,10 +1,4 @@
-"""New movie detection and notification service.
-
-Detects movies newly entering the box office or recent releases,
-enriches with Watcha expected ratings, and sends Telegram notifications.
-Known movie codes are persisted in SQLite so restarts don't
-re-trigger notifications.
-"""
+"""New movie detection and notification service."""
 
 import logging
 from urllib.parse import quote
@@ -12,16 +6,15 @@ from urllib.parse import quote
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from cinepyle.config import KOBIS_API_KEY, NOTIFICATION_DB_PATH, WATCHA_EMAIL, WATCHA_PASSWORD
-from cinepyle.notifications.store import NotificationStore
+from cinepyle.config import KOBIS_API_KEY, WATCHA_EMAIL, WATCHA_PASSWORD
 from cinepyle.scrapers.boxoffice import fetch_daily_box_office
 from cinepyle.scrapers.kofic import fetch_recent_releases
 from cinepyle.scrapers.watcha import WatchaClient
 
 logger = logging.getLogger(__name__)
 
+_known_movie_codes: set[str] = set()
 _watcha_client: WatchaClient | None = None
-_store: NotificationStore | None = None
 
 
 def _get_watcha_client() -> WatchaClient:
@@ -29,13 +22,6 @@ def _get_watcha_client() -> WatchaClient:
     if _watcha_client is None:
         _watcha_client = WatchaClient(WATCHA_EMAIL, WATCHA_PASSWORD)
     return _watcha_client
-
-
-def _get_store() -> NotificationStore:
-    global _store
-    if _store is None:
-        _store = NotificationStore(NOTIFICATION_DB_PATH)
-    return _store
 
 
 async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -73,20 +59,18 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             }
 
     current_codes = set(all_movies.keys())
-    store = _get_store()
-    known_codes = await store.get_known_movie_codes()
 
-    if not known_codes:
-        # First run ever: seed DB without sending notifications
-        await store.add_movie_codes(current_codes)
-        logger.info("Seeded known movies: %d entries", len(current_codes))
+    if not _known_movie_codes:
+        # First run: seed without sending notifications
+        _known_movie_codes.update(current_codes)
+        logger.info("Seeded known movies: %d entries", len(_known_movie_codes))
         return
 
-    new_codes = current_codes - known_codes
+    new_codes = current_codes - _known_movie_codes
     if not new_codes:
         return
 
-    await store.add_movie_codes(new_codes)
+    _known_movie_codes.update(new_codes)
 
     # Build notification with Watcha ratings and booking deeplinks
     watcha = _get_watcha_client()
@@ -97,19 +81,19 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Try to get Watcha expected rating
         try:
-            rating = await watcha.get_expected_rating(name)
+            rating = watcha.get_expected_rating(name)
         except Exception:
             logger.exception("Watcha rating lookup failed for %s", name)
             rating = None
 
         # Build text
-        text = f"\U0001f195 새 영화: {name}"
+        text = f"🆕 새 영화: {name}"
         if info.get("rank"):
             text += f" (박스오피스 {info['rank']}위)"
         if info.get("genre"):
             text += f"\n장르: {info['genre']}"
         if rating is not None:
-            text += f"\n\u2b50 Watcha 예상 {rating}"
+            text += f"\n⭐ Watcha 예상 {rating}"
 
         # Booking deeplinks per chain (updated for 2025+ URLs)
         encoded_name = quote(name)

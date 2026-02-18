@@ -1,20 +1,14 @@
 # Cinepyle
 
-한국 영화 텔레그램 알림봇 - 박스오피스 순위, 신작 알림, IMAX 상영 알림, 근처 영화관 찾기, 자연어 예매
+한국 영화 텔레그램 알림봇 - 박스오피스 순위, 신작 알림, IMAX 상영 알림, 근처 영화관 찾기, AI 영화 뉴스 다이제스트
 
 ## 기능
 
 - `/ranking` - 일일 박스오피스 순위 (영화진흥위원회 KOFIC)
 - `/nearby` - 근처 영화관 찾기 (CGV, 롯데시네마, 메가박스, 씨네Q, 독립영화관)
-- `/book` - 자연어 영화 예매 (LLM 기반, CGV/롯데시네마/메가박스/씨네Q)
-- 매일 아침 9시 영화 다이제스트 (개봉 예정 + 박스오피스 + Watcha 기대평 + 씨네21/네이버 링크)
 - 신작 영화 자동 알림 (박스오피스 + KOFIC 영화목록 API, Watcha Pedia 예상 별점 포함)
 - CGV 용산아이파크몰 IMAX 상영 개시 자동 알림
-- 웹 대시보드 (`localhost:3847`) — 봇 설정을 런타임에 변경 가능
-  - 알림 주기 조정 (IMAX / 신작 체크 간격)
-  - 선호 영화관 선택
-  - LLM 우선순위 드래그 정렬
-  - 크리덴셜 / API 키 관리 (암호화 저장)
+- 📰 AI 데일리 다이제스트 - Daum 영화뉴스, Cine21, Watcha 매거진에서 읽을만한 기사를 AI가 선별·요약하여 매일 전송
 
 ## 설치 및 실행
 
@@ -37,47 +31,39 @@ cp .env.example .env
 | `KOBIS_API_KEY` | [영화진흥위원회 API 키](https://www.kobis.or.kr/kobisopenapi/homepg/main/main.do) |
 | `WATCHA_EMAIL` | Watcha Pedia 계정 이메일 |
 | `WATCHA_PASSWORD` | Watcha Pedia 계정 비밀번호 |
-| `CGV_ID` | CGV 계정 ID (예매용, 선택) |
-| `CGV_PASSWORD` | CGV 계정 비밀번호 (예매용, 선택) |
-| `LOTTECINEMA_ID` | 롯데시네마 계정 ID (예매용, 선택) |
-| `LOTTECINEMA_PASSWORD` | 롯데시네마 계정 비밀번호 (예매용, 선택) |
-| `MEGABOX_ID` | 메가박스 계정 ID (예매용, 선택) |
-| `MEGABOX_PASSWORD` | 메가박스 계정 비밀번호 (예매용, 선택) |
-| `CINEQ_ID` | 씨네Q 계정 ID (예매용, 선택) |
-| `CINEQ_PASSWORD` | 씨네Q 계정 비밀번호 (예매용, 선택) |
-| `NAVER_MAPS_CLIENT_ID` | 네이버 지도 API Client ID (길찾기용, 선택) |
-| `NAVER_MAPS_CLIENT_SECRET` | 네이버 지도 API Client Secret (길찾기용, 선택) |
-| `DASHBOARD_PORT` | 웹 대시보드 포트 (기본 `3847`, 선택) |
-| `SETTINGS_ENCRYPTION_KEY` | 크리덴셜 암호화 키 (미설정 시 자동 생성, 선택) |
+| `DASHBOARD_PORT` | 대시보드 포트 (기본 `8080`, 선택) |
 
 ### 로컬 실행
 
 ```bash
 uv sync
-uv run playwright install chromium
 uv run cinepyle
-# 대시보드: http://localhost:3847
+# 대시보드: http://localhost:8080
 ```
 
 ### Docker
 
 ```bash
-docker compose up -d
-# 대시보드: http://localhost:3847
+docker compose up --build
+# 대시보드: http://localhost:8080
 ```
 
-로컬 빌드로 실행하려면:
+## 대시보드
 
-```bash
-docker compose -f docker-compose.dev.yml up --build
-```
+웹 대시보드 (`localhost:8080`)에서 다이제스트 설정을 관리할 수 있습니다:
+
+- 뉴스 소스 선택 (Daum / Cine21 / Watcha)
+- 전송 스케줄 (시간, 활성화)
+- LLM 설정 (OpenAI / Anthropic / Google + API Key)
+- AI 선별 기준 (자유 텍스트로 취향 입력)
+- 테스트 다이제스트 즉시 전송
 
 ## 기술 스택
 
 - Python 3.14
 - python-telegram-bot (async)
-- Playwright (헤드리스 브라우저 스크래핑 - CGV, Watcha 등 CSR 사이트)
-- requests / BeautifulSoup4 (API 호출)
-- FastAPI + HTMX + Tailwind CSS (웹 대시보드, 빌드 불필요)
+- requests / BeautifulSoup4 (스크래핑)
+- FastAPI / Jinja2 (대시보드)
+- OpenAI / Anthropic / Google Gemini (AI 큐레이션)
 - python-dotenv (환경변수)
 - Docker / GitHub Actions (CI/CD)
