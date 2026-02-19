@@ -60,7 +60,12 @@ CGV_BOOKING_URL = "https://cgv.co.kr/cnm/myPage/myBkng/bkngList"
 
 
 async def _ensure_cgv_login(page: Page) -> bool:
-    """Ensure CGV login session is active.  Returns True if logged in."""
+    """Ensure CGV login session is active.  Returns True if logged in.
+
+    If the login page shows a CAPTCHA, we attempt to solve it using
+    LLM vision (see ``browser/captcha.py``).  Up to 3 attempts are made
+    since OCR may not always be exact.
+    """
     from cinepyle.config import CGV_ID, CGV_PASSWORD
 
     if not CGV_ID or not CGV_PASSWORD:
@@ -73,39 +78,125 @@ async def _ensure_cgv_login(page: Page) -> bool:
     if "login" not in page.url.lower() and "mem/login" not in page.url:
         return True
 
-    # Check for CAPTCHA
+    # Detect CAPTCHA
     page_text = await page.evaluate(
         "() => document.body.innerText.substring(0, 2000)"
     )
-    if "자동입력 방지문자" in page_text or "captcha" in page_text.lower():
-        logger.warning("CGV login has CAPTCHA — cannot auto-login")
-        return False
+    has_captcha = "자동입력 방지문자" in page_text or "captcha" in page_text.lower()
 
-    # Fill login form
-    try:
-        # CGV uses ID, not email
-        id_input = page.locator("input[type='text']").first
-        pw_input = page.locator("input[type='password']").first
-        await id_input.fill(CGV_ID)
-        await pw_input.fill(CGV_PASSWORD)
+    if has_captcha:
+        logger.info("CGV login has CAPTCHA — attempting LLM vision solve")
 
-        # Submit
-        await page.get_by_text("로그인", exact=True).first.click()
-        await page.wait_for_load_state("networkidle", timeout=15000)
+    max_attempts = 3 if has_captcha else 1
 
-        # Check if login succeeded
-        if "login" in page.url.lower():
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Fill login form
+            id_input = page.locator("input[type='text']").first
+            pw_input = page.locator("input[type='password']").first
+            await id_input.fill("")
+            await pw_input.fill("")
+            await id_input.fill(CGV_ID)
+            await pw_input.fill(CGV_PASSWORD)
+
+            # Solve CAPTCHA if present
+            if has_captcha:
+                from cinepyle.browser.captcha import solve_captcha
+
+                # The CAPTCHA input field
+                captcha_input = page.locator(
+                    "input[placeholder*='방지문자'], "
+                    "input[name*='captcha'], "
+                    "input[id*='captcha'], "
+                    "input[aria-label*='방지문자']"
+                ).first
+
+                # CAPTCHA image element — try the <img> inside the wrapper first,
+                # then fall back to the wrapper div itself
+                captcha_selector = (
+                    "[class*='captchaWrap'] img, "
+                    "[class*='captcha'] img, "
+                    "img[alt*='captcha'], "
+                    "img[alt*='방지문자'], "
+                    "[class*='captchaWrap']"
+                )
+
+                # Refresh CAPTCHA on retries to get a new image
+                if attempt > 1:
+                    try:
+                        refresh_btn = page.locator(
+                            "button:has-text('새로고침'), "
+                            "[class*='captcha'] button[class*='refresh'], "
+                            "a:has-text('새로고침')"
+                        ).first
+                        await refresh_btn.click(timeout=2000)
+                        await page.wait_for_timeout(1000)
+                    except Exception:
+                        pass
+
+                answer = await solve_captcha(page, captcha_selector)
+                if not answer:
+                    logger.warning(
+                        "CGV CAPTCHA solve failed (attempt %d/%d)",
+                        attempt, max_attempts,
+                    )
+                    continue
+
+                await captcha_input.fill(answer)
+                logger.info(
+                    "CGV CAPTCHA filled: %r (attempt %d/%d)",
+                    answer, attempt, max_attempts,
+                )
+
+            # Dismiss any alert modals that might overlay the form
+            for _ in range(3):
+                try:
+                    modal_btn = page.locator(
+                        ".cgv-modal.active button:visible, "
+                        "[class*='modal-alert'] button:visible"
+                    ).first
+                    if await modal_btn.is_visible(timeout=500):
+                        await modal_btn.click()
+                        await page.wait_for_timeout(500)
+                except Exception:
+                    break
+
+            # Submit — click the actual submit button, NOT the footer link
+            submit_btn = page.locator("button[type='submit']:has-text('로그인')")
+            await submit_btn.click(timeout=10000)
+            await page.wait_for_load_state("networkidle", timeout=15000)
+            await page.wait_for_timeout(2000)
+
+            # Check if login succeeded — we're no longer on the login page
+            if "/mem/login" not in page.url:
+                # Save session
+                from cinepyle.browser.manager import BrowserManager
+
+                await BrowserManager.instance().save_context("cgv")
+                logger.info("CGV login succeeded (attempt %d)", attempt)
+                return True
+
+            # Still on login page — check if CAPTCHA error
+            error_text = await page.evaluate(
+                "() => document.body.innerText.substring(0, 2000)"
+            )
+            if "자동입력 방지문자" in error_text and attempt < max_attempts:
+                logger.info(
+                    "CGV CAPTCHA incorrect (attempt %d/%d), retrying",
+                    attempt, max_attempts,
+                )
+                continue
+
             logger.warning("CGV login failed — still on login page")
             return False
 
-        # Save session
-        from cinepyle.browser.manager import BrowserManager
+        except Exception:
+            logger.exception("CGV login attempt %d failed", attempt)
+            if attempt == max_attempts:
+                return False
 
-        await BrowserManager.instance().save_context("cgv")
-        return True
-    except Exception:
-        logger.exception("CGV login failed")
-        return False
+    logger.warning("CGV login failed after %d attempts", max_attempts)
+    return False
 
 
 async def fetch_cgv_booking_history() -> BookingHistoryResult:
@@ -197,18 +288,19 @@ async def _ensure_lotte_login(page: Page) -> bool:
     if not LOTTE_ID or not LOTTE_PASSWORD:
         return False
 
-    await page.goto(LOTTE_BOOKING_URL, wait_until="networkidle", timeout=30000)
+    await page.goto(LOTTE_LOGIN_URL, wait_until="networkidle", timeout=30000)
 
-    # If not redirected to login → already logged in
+    # If redirected away from login → already logged in
     if "login" not in page.url.lower():
         return True
 
-    # Fill login form
+    # Fill login form (selectors updated Feb 2026)
     try:
-        await page.fill("#txtLoginID", LOTTE_ID)
-        await page.fill("#txtLoginPW", LOTTE_PASSWORD)
-        await page.click("#btnLogin")
+        await page.locator("#userId").fill(LOTTE_ID)
+        await page.locator("#userPassword").fill(LOTTE_PASSWORD)
+        await page.locator("button:has-text('로그인')").first.click()
         await page.wait_for_load_state("networkidle", timeout=15000)
+        await page.wait_for_timeout(2000)
 
         if "login" in page.url.lower():
             logger.warning("Lotte login failed — still on login page")

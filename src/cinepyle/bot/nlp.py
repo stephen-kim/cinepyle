@@ -67,6 +67,8 @@ TOOL_DEFINITIONS: list[dict] = [
         "description": "근처/주변/가까운 영화관 찾기. '근처 영화관', '가까운 극장', '영화관 어디', '주변 CGV' 등. 위치 확인은 봇이 따로 처리하므로 이 도구를 호출하면 됨.",
         "parameters": {
             "reply": {"type": "string", "description": "위치 전송을 요청하는 안내 메시지"},
+            "chain": {"type": "string", "description": "체인명 (CGV, 롯데시네마, 메가박스 등). 없으면 빈 문자열"},
+            "region": {"type": "string", "description": "지역명 (신림, 강남 등). 없으면 빈 문자열"},
         },
         "required": ["reply"],
     },
@@ -576,9 +578,24 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
 
     for kw in _NEARBY_KEYWORDS:
         if kw in msg:
+            # Try to extract chain name from message
+            chain = ""
+            for c in ("CGV", "cgv", "씨지브이"):
+                if c in msg:
+                    chain = "CGV"
+                    break
+            for c in ("메가박스", "megabox"):
+                if c in msg.lower():
+                    chain = "메가박스"
+                    break
+            for c in ("롯데시네마", "롯데", "lotte"):
+                if c in msg.lower():
+                    chain = "롯데시네마"
+                    break
             return ClassificationResult(
                 intent=Intent.NEARBY,
                 reply="근처 영화관을 찾아드릴게요! 위치를 전송해주세요.",
+                params={"chain": chain},
             )
 
     for kw in _NEW_MOVIES_KEYWORDS:

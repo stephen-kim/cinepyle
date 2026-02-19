@@ -1,10 +1,11 @@
-"""Unified nearby theater finder across all chains and indie cinemas."""
+"""Unified nearby theater finder using the local TheaterDatabase.
+
+Uses pre-synced theater data (lat/lon) from the SQLite DB instead of
+making live API calls, which avoids N+1 HTTP requests and hangs.
+"""
 
 import logging
 import math
-
-from cinepyle.theaters import cgv, lotte, megabox
-from cinepyle.theaters.data_indie import data as indie_theaters
 
 logger = logging.getLogger(__name__)
 
@@ -20,91 +21,56 @@ def find_nearest_theaters(
     latitude: float,
     longitude: float,
     n: int = 5,
+    chain_filter: str = "",
 ) -> list[dict]:
-    """Find the N nearest theaters across all chains and indie cinemas.
+    """Find the N nearest theaters across all chains.
 
-    Returns a list of dicts with: TheaterName, Distance, Chain, Latitude, Longitude.
-    The list is sorted by distance (nearest first).
+    Uses the local TheaterDatabase (SQLite) which already has lat/lon for
+    all theaters.  No HTTP calls are made — instant results.
+
+    Args:
+        latitude: User's latitude.
+        longitude: User's longitude.
+        n: Max number of results.
+        chain_filter: Optional chain name filter (e.g. "메가박스", "CGV").
+
+    Returns:
+        List of dicts with: TheaterName, Distance, Chain, Latitude, Longitude.
+        Sorted by distance (nearest first).
     """
-    all_theaters: list[tuple[float, dict]] = []
+    from cinepyle.theaters.models import TheaterDatabase
 
-    # CGV (static data, always available)
+    db = TheaterDatabase.load()
     try:
-        for t in cgv.get_theater_list():
-            dist = _distance(
-                latitude, longitude, float(t["Latitude"]), float(t["Longitude"])
-            )
+        all_theaters: list[tuple[float, dict]] = []
+
+        for t in db.theaters:
+            # Skip theaters without coordinates
+            if not t.latitude or not t.longitude:
+                continue
+
+            # Apply chain filter if specified
+            if chain_filter:
+                cf = chain_filter.lower()
+                chain_lower = t.chain.lower()
+                name_lower = t.name.lower()
+                if cf not in chain_lower and cf not in name_lower:
+                    continue
+
+            dist = _distance(latitude, longitude, t.latitude, t.longitude)
             all_theaters.append(
                 (
                     dist,
                     {
-                        "TheaterName": t["TheaterName"],
-                        "Latitude": t["Latitude"],
-                        "Longitude": t["Longitude"],
-                        "Chain": "CGV",
+                        "TheaterName": t.name,
+                        "Latitude": t.latitude,
+                        "Longitude": t.longitude,
+                        "Chain": t.chain,
                     },
                 )
             )
-    except Exception:
-        logger.exception("Failed to load CGV theaters")
 
-    # Lotte Cinema (API call)
-    try:
-        for t in lotte.get_theater_list():
-            dist = _distance(
-                latitude, longitude, float(t["Latitude"]), float(t["Longitude"])
-            )
-            all_theaters.append(
-                (
-                    dist,
-                    {
-                        "TheaterName": t["TheaterName"],
-                        "Latitude": t["Latitude"],
-                        "Longitude": t["Longitude"],
-                        "Chain": "롯데시네마",
-                    },
-                )
-            )
-    except Exception:
-        logger.exception("Failed to load Lotte Cinema theaters")
-
-    # MegaBox (API call)
-    try:
-        for t in megabox.get_theater_list():
-            dist = _distance(
-                latitude, longitude, float(t["Latitude"]), float(t["Longitude"])
-            )
-            all_theaters.append(
-                (
-                    dist,
-                    {
-                        "TheaterName": t["TheaterName"],
-                        "Latitude": t["Latitude"],
-                        "Longitude": t["Longitude"],
-                        "Chain": "메가박스",
-                    },
-                )
-            )
-    except Exception:
-        logger.exception("Failed to load MegaBox theaters")
-
-    # Indie / CineQ theaters (static data)
-    for t in indie_theaters:
-        dist = _distance(
-            latitude, longitude, float(t["Latitude"]), float(t["Longitude"])
-        )
-        chain_label = "씨네Q" if t.get("Type") == "cineq" else "독립영화관"
-        all_theaters.append(
-            (
-                dist,
-                {
-                    "TheaterName": t["TheaterName"],
-                    "Latitude": t["Latitude"],
-                    "Longitude": t["Longitude"],
-                    "Chain": chain_label,
-                },
-            )
-        )
-
-    all_theaters.sort(key=lambda x: x[0])
-    return [theater for _, theater in all_theaters[:n]]
+        all_theaters.sort(key=lambda x: x[0])
+        return [theater for _, theater in all_theaters[:n]]
+    finally:
+        db.close()

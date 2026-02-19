@@ -88,7 +88,7 @@ async def message_handler(
         await _do_ranking(update)
 
     elif result.intent == Intent.NEARBY:
-        await _do_nearby(update, result.reply)
+        await _do_nearby(update, context, result)
 
     elif result.intent == Intent.THEATER_INFO:
         await update.message.reply_text(result.reply)
@@ -166,15 +166,79 @@ async def _do_ranking(update: Update) -> None:
     await update.message.reply_text(text)
 
 
-async def _do_nearby(update: Update, reply: str) -> None:
-    """Ask user to send their location."""
+async def _do_nearby(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    result: ClassificationResult,
+) -> None:
+    """Find nearby theaters — via GPS location or text-based region search.
+
+    Stores ``chain_filter`` in user_data so the subsequent location_handler
+    can filter by chain (e.g. "근처 메가박스").
+    """
+    chain = result.params.get("chain", "")
+    region = result.params.get("region", "")
+
+    # Store chain filter for location_handler
+    context.user_data["nearby_chain_filter"] = chain
+
+    # If a region/address was provided, search by text immediately
+    if region:
+        await _search_nearby_by_text(update, region, chain)
+        return
+
+    # Otherwise ask for GPS location
     location_button = KeyboardButton(text="📍 위치 전송", request_location=True)
     keyboard = ReplyKeyboardMarkup(
         [[location_button]],
         one_time_keyboard=True,
         resize_keyboard=True,
     )
-    await update.message.reply_text(reply, reply_markup=keyboard)
+    await update.message.reply_text(result.reply, reply_markup=keyboard)
+
+
+async def _search_nearby_by_text(
+    update: Update, region: str, chain: str = ""
+) -> None:
+    """Search theaters by region text (e.g. 신림, 강남)."""
+    from cinepyle.theaters.models import TheaterDatabase
+
+    db = TheaterDatabase.load()
+    try:
+        matches = []
+        r = region.lower()
+        for t in db.theaters:
+            haystack = f"{t.name} {t.address}".lower()
+            if r not in haystack:
+                continue
+            if chain:
+                cf = chain.lower()
+                if cf not in t.chain.lower() and cf not in t.name.lower():
+                    continue
+            matches.append(t)
+
+        if not matches:
+            chain_text = f" {chain}" if chain else ""
+            await update.message.reply_text(
+                f'"{region}" 근처{chain_text} 영화관을 찾을 수 없습니다.\n'
+                "📍 위치를 전송하시면 GPS로 검색할 수 있어요!"
+            )
+            return
+
+        # Sort by name for readability (no GPS = can't sort by distance)
+        matches = matches[:10]
+        lines = []
+        for i, t in enumerate(matches, 1):
+            line = f"{i}. {t.name} ({t.chain})"
+            if t.address:
+                line += f"\n   📍 {t.address}"
+            lines.append(line)
+
+        chain_text = f" {chain}" if chain else ""
+        text = f'📍 "{region}" 근처{chain_text} 영화관:\n\n' + "\n".join(lines)
+        await update.message.reply_text(text)
+    finally:
+        db.close()
 
 
 async def _do_theater_info(update: Update, query: str) -> None:
@@ -1368,7 +1432,12 @@ async def _do_booking_history(update: Update, params: dict) -> None:
 async def location_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Handle location messages -- find nearby theaters."""
+    """Handle location messages — find nearby theaters.
+
+    Uses the local TheaterDatabase (no HTTP calls) so results are instant.
+    If a ``nearby_chain_filter`` was stored by ``_do_nearby``, it filters
+    by that chain (e.g. only MegaBox results).
+    """
     logger.info("location_handler called")
     location = update.message.location
     if location is None:
@@ -1379,6 +1448,9 @@ async def location_handler(
     longitude = location.longitude
     logger.info("Location received: lat=%s, lon=%s", latitude, longitude)
 
+    # Retrieve chain filter set by _do_nearby (if any)
+    chain_filter = context.user_data.pop("nearby_chain_filter", "")
+
     remove_keyboard = ReplyKeyboardRemove()
     await update.message.reply_text(
         "위치를 확인했습니다. 근처 영화관을 검색 중입니다...",
@@ -1386,10 +1458,8 @@ async def location_handler(
     )
 
     try:
-        # find_nearest_theaters makes synchronous HTTP calls (Lotte/MegaBox APIs)
-        # which can block the event loop.  Run in a thread to stay non-blocking.
-        theaters = await asyncio.to_thread(
-            find_nearest_theaters, latitude, longitude, 5
+        theaters = find_nearest_theaters(
+            latitude, longitude, n=5, chain_filter=chain_filter,
         )
     except Exception:
         logger.exception("Failed to find nearby theaters")
@@ -1399,12 +1469,16 @@ async def location_handler(
         return
 
     if not theaters:
-        await update.message.reply_text("근처에 영화관을 찾을 수 없습니다.")
+        chain_text = f" {chain_filter}" if chain_filter else ""
+        await update.message.reply_text(
+            f"근처에{chain_text} 영화관을 찾을 수 없습니다."
+        )
         return
 
     lines = []
     for i, t in enumerate(theaters, 1):
         lines.append(f"{i}. {t['TheaterName']} ({t['Chain']})")
 
-    text = "📍 근처 영화관:\n\n" + "\n".join(lines)
+    chain_text = f" {chain_filter}" if chain_filter else ""
+    text = f"📍 근처{chain_text} 영화관:\n\n" + "\n".join(lines)
     await update.message.reply_text(text)

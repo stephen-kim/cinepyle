@@ -1,8 +1,8 @@
-"""Seat map screenshot capture for CGV, Lotte Cinema, MegaBox.
+"""Seat map screenshot capture for CGV, Lotte Cinema, MegaBox, CineQ.
 
 Navigates to each chain's booking page via Playwright, selects the
 correct theater/date/movie/showtime, and captures a screenshot of
-the seat layout.  MegaBox requires login; Lotte/CGV are not yet supported.
+the seat layout.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ async def capture_seat_map(
         "cgv": _capture_cgv,
         "lotte": _capture_lotte,
         "megabox": _capture_megabox,
+        "cineq": _capture_cineq,
     }
     handler = chain_handlers.get(chain)
     if not handler:
@@ -370,11 +371,18 @@ async def _capture_lotte(
     6. Dismiss any inner info popup ("알려드립니다") if present.
     7. Screenshot the popup element.
 
-    No login is required — the minimap is visible in Step 1.
+    Login is required to reach the actual seat selection grid.
     """
+    from cinepyle.browser.booking_history import _ensure_lotte_login
+
     page = await _new_page("lotte")
 
     try:
+        # --- Login first (required for seat selection) ---
+        logged_in = await _ensure_lotte_login(page)
+        if not logged_in:
+            logger.warning("Lotte: login failed — will show minimap only")
+
         await page.goto(
             "https://www.lottecinema.co.kr/NLCHS/Ticketing",
             wait_until="networkidle",
@@ -511,7 +519,69 @@ async def _capture_lotte(
                 pass
             break
 
-        # --- Screenshot the popup ---
+        # --- Click "인원/좌석 선택" to get the real seat grid ---
+        if logged_in:
+            try:
+                seat_btn = page.locator(
+                    '#layerReserveStep01 a:has-text("인원/좌석 선택")'
+                ).first
+                await seat_btn.click(timeout=5000)
+                logger.info("Lotte: clicked 인원/좌석 선택")
+                await page.wait_for_timeout(5000)
+
+                # Dismiss any additional popups (age rating, etc.)
+                for _ in range(3):
+                    try:
+                        popup_btn = page.locator(
+                            ".layer_popup button:has-text('확인'):visible, "
+                            "button.btnCloseLayerMulti:visible, "
+                            ".pop_wrap button:has-text('확인'):visible"
+                        ).first
+                        if await popup_btn.is_visible(timeout=800):
+                            await popup_btn.click()
+                            await page.wait_for_timeout(800)
+                    except Exception:
+                        break
+
+                # Screenshot the seat selection area (step 02)
+                # Prefer the seat grid wrapper; fall back to the full step
+                for sel in (
+                    "#reserveStep02",
+                    ".article_seat",
+                    ".seat_wrap",
+                ):
+                    seat_area = page.locator(sel).first
+                    try:
+                        if await seat_area.is_visible(timeout=2000):
+                            screenshot = await seat_area.screenshot(
+                                type="png"
+                            )
+                            logger.info(
+                                "Lotte: captured seat selection '%s' "
+                                "(%d bytes)",
+                                sel,
+                                len(screenshot),
+                            )
+                            return SeatMapResult(
+                                success=True, screenshot=screenshot
+                            )
+                    except Exception:
+                        continue
+
+                # Last resort: full viewport
+                screenshot = await page.screenshot(
+                    type="png",
+                    clip={"x": 0, "y": 0, "width": 1280, "height": 900},
+                )
+                logger.info("Lotte: captured seat page (full viewport)")
+                return SeatMapResult(success=True, screenshot=screenshot)
+
+            except Exception:
+                logger.info(
+                    "Lotte: seat selection failed, falling back to minimap"
+                )
+
+        # --- Fallback: screenshot the minimap popup ---
         popup = page.locator("#layerReserveStep01")
         try:
             await popup.wait_for(state="visible", timeout=5000)
@@ -520,7 +590,6 @@ async def _capture_lotte(
                 "Lotte: captured minimap popup (%d bytes)", len(screenshot)
             )
         except Exception:
-            # Fallback: full viewport
             logger.info("Lotte: popup not found, taking full screenshot")
             screenshot = await page.screenshot(
                 type="png",
@@ -625,6 +694,28 @@ async def _capture_cgv(
         logger.info("CGV: clicked theater '%s'", short_name)
         await page.wait_for_timeout(4000)
 
+        # --- Select date (if not today) ---
+        play_day = date_str.split("-")[-1].lstrip("0") if date_str else ""
+        if play_day:
+            await page.evaluate(
+                """(day) => {
+                    const btns = document.querySelectorAll(
+                        'button[class*="scrollItem"]'
+                    );
+                    for (const b of btns) {
+                        const text = b.textContent.trim();
+                        if (text.endsWith(day) && !b.className.includes('disabled')
+                            && !b.className.includes('Active')) {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                play_day,
+            )
+            await page.wait_for_timeout(4000)
+
         if not logged_in:
             # Not logged in — screenshot the schedule page as fallback
             logger.info("CGV: no login, capturing schedule page as fallback")
@@ -641,16 +732,35 @@ async def _capture_cgv(
         # --- Click showtime ---
         clicked_time = await page.evaluate(
             """(targetTime) => {
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    const text = btn.textContent.trim();
-                    if (text.includes(targetTime) && !btn.disabled
-                        && !text.includes('예매종료') && btn.offsetWidth > 0) {
-                        btn.click();
-                        return true;
+                // Showtime buttons have class containing 'timeLink'
+                const timeBtns = document.querySelectorAll(
+                    'button[class*="timeLink"], button[class*="time_link"]'
+                );
+                const candidates = timeBtns.length > 0
+                    ? timeBtns
+                    : document.querySelectorAll('button');
+
+                // First pass: match specific time
+                if (targetTime) {
+                    for (const btn of candidates) {
+                        const text = btn.textContent.trim();
+                        if (text.includes(targetTime) && !btn.disabled
+                            && !text.includes('예매종료') && btn.offsetWidth > 0) {
+                            btn.click();
+                            return text.substring(0, 30);
+                        }
                     }
                 }
-                return false;
+                // Second pass: click first available showtime
+                for (const btn of candidates) {
+                    const text = btn.textContent.trim();
+                    if (/\\d{1,2}:\\d{2}/.test(text) && !btn.disabled
+                        && !text.includes('예매종료') && btn.offsetWidth > 0) {
+                        btn.click();
+                        return text.substring(0, 30);
+                    }
+                }
+                return '';
             }""",
             start_time,
         )
@@ -691,7 +801,25 @@ async def _capture_cgv(
         )
         await page.wait_for_timeout(2000)
 
-        # --- Screenshot ---
+        # --- Screenshot the seat area only ---
+        for sel in (
+            "[class*='seatChoiceArea']",
+            "[class*='seatMap_container']",
+            "[class*='seatSection']",
+        ):
+            seat_el = page.locator(sel).first
+            try:
+                if await seat_el.is_visible(timeout=2000):
+                    screenshot = await seat_el.screenshot(type="png")
+                    logger.info(
+                        "CGV: captured seat area '%s' (%d bytes)",
+                        sel, len(screenshot),
+                    )
+                    return SeatMapResult(success=True, screenshot=screenshot)
+            except Exception:
+                continue
+
+        # Fallback: full viewport
         screenshot = await page.screenshot(
             type="png",
             clip={"x": 0, "y": 0, "width": 1280, "height": 900},
@@ -712,6 +840,152 @@ async def _capture_cgv(
             success=False,
             screenshot=b"",
             error=f"CGV 좌석 배치도 로딩 실패: {e}",
+        )
+    finally:
+        await page.close()
+
+
+# ---------------------------------------------------------------------------
+# CineQ (씨네큐)
+# ---------------------------------------------------------------------------
+
+
+async def _capture_cineq(
+    theater_code: str,
+    theater_name: str,
+    movie_name: str,
+    start_time: str,
+    screen_id: str,
+    screen_name: str,
+    date_str: str,
+    remaining_seats: int = 0,
+    meta: dict | None = None,
+    schedule_id: str = "",
+) -> SeatMapResult:
+    """Capture CineQ seat map via the ``simpleReserv()`` popup.
+
+    CineQ booking flow (as of Feb 2026):
+
+    1. Navigate to ``/Theater?TheaterCode=...`` (no login required).
+    2. Fetch the timetable via ``POST /Theater/MovieTable2`` to find the
+       ``screenPlanId`` for the target showtime (unless passed as *schedule_id*).
+    3. Call ``simpleReserv(playDate, theaterCode, movieCode, screenPlanId)``
+       which opens a jQuery modal (``#popup_reserve``).
+    4. Click "다음" to advance to the seat selection step.
+    5. Screenshot the popup (``.popup.seatChoice``) which shows the seat grid.
+
+    No login is required — seat availability is public.
+    """
+    page = await _new_page("cineq")
+
+    try:
+        play_date = date_str.replace("-", "")
+        url = f"https://www.cineq.co.kr/Theater?TheaterCode={theater_code}"
+        await page.goto(url, wait_until="networkidle", timeout=30_000)
+        await page.wait_for_timeout(2000)
+
+        # --- Resolve screenPlanId if not supplied ---
+        screen_plan_id = schedule_id
+        movie_code = (meta or {}).get("movie_code", "")
+
+        if not screen_plan_id:
+            # Fetch schedule via the same POST API the site uses
+            schedule_entries = await page.evaluate(
+                """async ([theaterCode, playDate]) => {
+                    const resp = await fetch('/Theater/MovieTable2', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: 'TheaterCode=' + theaterCode + '&PlayDate=' + playDate,
+                    });
+                    const html = await resp.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const times = doc.querySelectorAll('.time');
+                    return Array.from(times).map(t => ({
+                        screenPlanId: t.dataset.screenplanid || '',
+                        movieCode: t.dataset.moviecode || '',
+                        timeText: (t.querySelector('a')?.textContent || '').trim(),
+                    }));
+                }""",
+                [theater_code, play_date],
+            )
+
+            # Match by start_time (e.g. "20:20")
+            for entry in schedule_entries:
+                if entry["timeText"].startswith(start_time):
+                    screen_plan_id = entry["screenPlanId"]
+                    movie_code = movie_code or entry["movieCode"]
+                    logger.info(
+                        "CineQ: matched showtime %s → screenPlanId=%s",
+                        start_time,
+                        screen_plan_id,
+                    )
+                    break
+
+            if not screen_plan_id:
+                return SeatMapResult(
+                    success=False,
+                    screenshot=b"",
+                    error=f"씨네큐 상영 시간 {start_time}을 찾을 수 없습니다",
+                )
+
+        if not movie_code:
+            # Last resort: pull from the first matching entry
+            movie_code = "0"
+
+        # --- Open reservation popup ---
+        await page.evaluate(
+            """([playDate, theaterCode, movieCode, screenPlanId]) => {
+                simpleReserv(playDate, theaterCode, movieCode, screenPlanId);
+            }""",
+            [play_date, theater_code, movie_code, screen_plan_id],
+        )
+        await page.wait_for_timeout(3000)
+
+        # --- Click "다음" to advance to seat selection ---
+        next_btn = page.locator('#popup_reserve a:has-text("다음")').first
+        try:
+            await next_btn.click(timeout=5000)
+            logger.info("CineQ: clicked 다음 → seat selection")
+        except Exception:
+            return SeatMapResult(
+                success=False,
+                screenshot=b"",
+                error="씨네큐 좌석 선택 페이지로 이동 실패",
+            )
+
+        await page.wait_for_timeout(3000)
+
+        # --- Screenshot the seat popup ---
+        seat_popup = page.locator(".popup.seatChoice")
+        try:
+            await seat_popup.wait_for(state="visible", timeout=5000)
+            screenshot = await seat_popup.screenshot(type="png")
+            logger.info(
+                "CineQ: captured seat map popup (%d bytes)", len(screenshot)
+            )
+        except Exception:
+            # Fallback: full viewport
+            logger.info("CineQ: seatChoice not found, taking full screenshot")
+            screenshot = await page.screenshot(
+                type="png",
+                clip={"x": 0, "y": 0, "width": 1280, "height": 900},
+            )
+
+        return SeatMapResult(success=True, screenshot=screenshot)
+
+    except PwTimeout:
+        return SeatMapResult(
+            success=False,
+            screenshot=b"",
+            error="씨네큐 좌석 페이지 로딩 시간 초과",
+        )
+    except Exception as e:
+        logger.exception("CineQ seat map failed")
+        return SeatMapResult(
+            success=False,
+            screenshot=b"",
+            error=f"씨네큐 좌석 배치도 로딩 실패: {e}",
         )
     finally:
         await page.close()
