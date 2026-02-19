@@ -129,12 +129,36 @@ def main() -> None:
 
     app.post_shutdown = _shutdown_browser
 
-    # Send startup greeting to Telegram
+    # Send startup greeting to Telegram (with now_playing stats)
     async def _send_startup_greeting(application) -> None:
         try:
+            from cinepyle.theaters.models import TheaterDatabase
+
+            db = TheaterDatabase.load()
+            total_theaters = len(db.theaters)
+            now_playing_movies = db.get_now_playing_movies()
+            synced_at = db.last_sync_at
+            db.close()
+
+            text = "🎬 Cinepyle 봇이 시작되었습니다!"
+            if now_playing_movies:
+                text += (
+                    f"\n\n📊 극장 {total_theaters}개 | "
+                    f"상영 중 영화 {len(now_playing_movies)}편"
+                )
+            if synced_at:
+                # Show KST time
+                from datetime import datetime, timezone
+                try:
+                    utc_dt = datetime.fromisoformat(synced_at)
+                    kst_dt = utc_dt.astimezone(ZoneInfo("Asia/Seoul"))
+                    text += f"\n🕐 데이터 기준: {kst_dt.strftime('%m/%d %H:%M')} KST"
+                except Exception:
+                    pass
+
             await application.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
-                text="🎬 Cinepyle 봇이 시작되었습니다!",
+                text=text,
             )
         except Exception:
             logger.warning("Failed to send startup greeting (TELEGRAM_CHAT_ID may be invalid)")

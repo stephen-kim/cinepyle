@@ -37,12 +37,14 @@ def main() -> None:
     total_theaters = len(db.theaters)
     total_screens = sum(len(t.screens) for t in db.theaters)
     last_sync = db.last_sync_at
+    now_playing_movies = db.get_now_playing_movies()
     db.close()
 
     logger.info(
-        "Sync complete: %d theaters, %d screens (sync_at=%s)",
+        "Sync complete: %d theaters, %d screens, %d now-playing movies (sync_at=%s)",
         total_theaters,
         total_screens,
+        len(now_playing_movies),
         last_sync,
     )
 

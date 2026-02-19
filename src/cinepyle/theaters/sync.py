@@ -30,6 +30,7 @@ from cinepyle.theaters.models import (
     MEGABOX_SCREEN_TYPE_MAP,
     SCREEN_TYPE_NORMAL,
     SPECIAL_TYPES,
+    NowPlaying,
     Screen,
     Theater,
     TheaterDatabase,
@@ -574,6 +575,55 @@ def sync_indie_cineq() -> list[Theater]:
 # =========================================================================
 
 
+def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
+    """Fetch today's schedule for all theaters and collect showtimes.
+
+    Uses ThreadPoolExecutor for parallel fetching (reusing schedule.py fetchers).
+    Returns a list of NowPlaying entries (movie + screen + time per theater).
+    """
+    from cinepyle.theaters.schedule import fetch_schedules_for_theaters
+
+    # Only theaters with screens and from supported chains
+    supported_chains = {"cgv", "lotte", "megabox"}
+    theaters_input = [
+        (t.chain, t.theater_code, t.name)
+        for t in db.theaters
+        if t.screens and t.chain in supported_chains
+    ]
+
+    if not theaters_input:
+        return []
+
+    logger.info("Collecting now_playing for %d theaters...", len(theaters_input))
+    schedules = fetch_schedules_for_theaters(theaters_input, target_date=None)
+
+    synced_at = datetime.now(timezone.utc).isoformat()
+    seen: set[tuple[str, str, str, str, str]] = set()
+    entries: list[NowPlaying] = []
+
+    for sched in schedules:
+        for screening in sched.screenings:
+            key = (
+                sched.chain, sched.theater_code,
+                screening.movie_name, screening.screen_name,
+                screening.start_time,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(NowPlaying(
+                chain=sched.chain,
+                theater_code=sched.theater_code,
+                movie_name=screening.movie_name,
+                screen_name=screening.screen_name,
+                start_time=screening.start_time,
+                screen_type=screening.screen_type,
+                synced_at=synced_at,
+            ))
+
+    return entries
+
+
 def sync_all_theaters() -> TheaterDatabase:
     """Sync all chains and return updated database.
 
@@ -610,6 +660,14 @@ def sync_all_theaters() -> TheaterDatabase:
             db.update_chain(chain, chain_theaters)
     except Exception:
         logger.exception("Failed to sync indie/cineq")
+
+    # Collect now_playing data (movies currently screening at each theater)
+    try:
+        now_playing = _collect_now_playing(db)
+        db.replace_now_playing(now_playing)
+        logger.info("Now playing: %d movie-theater pairs", len(now_playing))
+    except Exception:
+        logger.exception("Failed to collect now_playing data")
 
     db.last_sync_at = datetime.now(timezone.utc).isoformat()
     db.save()

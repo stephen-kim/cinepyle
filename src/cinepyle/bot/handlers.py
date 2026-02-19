@@ -702,10 +702,32 @@ async def _do_showtime(update: Update, params: dict) -> None:
     db = TheaterDatabase.load()
     try:
         if is_nationwide:
-            # Sample: pick theaters with screens (likely active),
-            # spread across chains for broad coverage
-            all_theaters = [t for t in db.theaters if t.screens]
-            matched = all_theaters
+            # Use now_playing DB for fast lookup
+            all_movie_names = db.get_now_playing_movies()
+
+            if all_movie_names:
+                matched_movies = _match_movie_title(movie_filter, all_movie_names)
+                if matched_movies:
+                    # Find theaters playing the matched movies
+                    seen_keys: set[tuple[str, str]] = set()
+                    matched = []
+                    for movie in matched_movies:
+                        for np in db.find_theaters_playing(movie):
+                            key = (np.chain, np.theater_code)
+                            if key not in seen_keys:
+                                seen_keys.add(key)
+                                t = db.get(np.chain, np.theater_code)
+                                if t:
+                                    matched.append(t)
+                else:
+                    db.close()
+                    await update.message.reply_text(
+                        f"'{movie_filter}' 상영 정보를 찾을 수 없습니다."
+                    )
+                    return
+            else:
+                # now_playing empty — fallback to all theaters with screens
+                matched = [t for t in db.theaters if t.screens]
         else:
             matched = _find_theaters_for_showtime(db, region, theater_query)
 

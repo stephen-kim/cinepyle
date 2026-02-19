@@ -178,6 +178,20 @@ class Screen(Base):
         return f"<Screen {self.chain}:{self.theater_code}:{self.screen_id} {self.name}>"
 
 
+class NowPlaying(Base):
+    """Movie showtime at a specific theater (populated during daily sync)."""
+
+    __tablename__ = "now_playing"
+
+    chain: Mapped[str] = mapped_column(String, primary_key=True)
+    theater_code: Mapped[str] = mapped_column(String, primary_key=True)
+    movie_name: Mapped[str] = mapped_column(String, primary_key=True)
+    screen_name: Mapped[str] = mapped_column(String, primary_key=True)
+    start_time: Mapped[str] = mapped_column(String, primary_key=True)  # "HH:MM"
+    screen_type: Mapped[str] = mapped_column(String, default="normal")
+    synced_at: Mapped[str] = mapped_column(String, default="")
+
+
 class SyncMeta(Base):
     """Key-value metadata (e.g. last_sync_at)."""
 
@@ -239,6 +253,26 @@ class TheaterDatabase:
             .order_by(Theater.name)
         )
         return list(self._session.scalars(stmt))
+
+    # -- now_playing API ---------------------------------------------------
+
+    def get_now_playing_movies(self) -> set[str]:
+        """Return set of all distinct movie names currently playing."""
+        stmt = select(NowPlaying.movie_name).distinct()
+        return set(self._session.scalars(stmt))
+
+    def find_theaters_playing(self, movie_name: str) -> list[NowPlaying]:
+        """Find all now_playing entries for a given movie name."""
+        stmt = select(NowPlaying).where(NowPlaying.movie_name == movie_name)
+        return list(self._session.scalars(stmt))
+
+    def replace_now_playing(self, entries: list[NowPlaying]) -> None:
+        """Replace all now_playing data atomically."""
+        self._session.execute(delete(NowPlaying))
+        self._session.flush()
+        for entry in entries:
+            self._session.merge(entry)
+        self._session.commit()
 
     # -- write API ---------------------------------------------------------
 
@@ -415,6 +449,15 @@ class TheaterDatabase:
                 "SELECT chain, theater_code, screen_id, name, "
                 "screen_type, seat_count, is_special FROM screens"
             ).fetchall()
+            # now_playing may not exist in older seeds
+            try:
+                seed_now_playing = seed_conn.execute(
+                    "SELECT chain, theater_code, movie_name, "
+                    "screen_name, start_time, screen_type, synced_at "
+                    "FROM now_playing"
+                ).fetchall()
+            except Exception:
+                seed_now_playing = []
         finally:
             seed_conn.close()
 
@@ -453,6 +496,25 @@ class TheaterDatabase:
                 ))
             self._session.add(t)
             count += 1
+
+        # Merge now_playing data from seed
+        if seed_now_playing:
+            self._session.execute(delete(NowPlaying))
+            self._session.flush()
+            for row in seed_now_playing:
+                self._session.add(NowPlaying(
+                    chain=row["chain"],
+                    theater_code=row["theater_code"],
+                    movie_name=row["movie_name"],
+                    screen_name=row["screen_name"] or "",
+                    start_time=row["start_time"] or "",
+                    screen_type=row["screen_type"] or "normal",
+                    synced_at=row["synced_at"] or "",
+                ))
+            logger.info(
+                "Merged %d now_playing entries from seed DB",
+                len(seed_now_playing),
+            )
 
         self.set_meta("last_sync_at", seed_sync)
         self._session.commit()
