@@ -30,11 +30,9 @@ async def send_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     # Step 2: LLM curation (with fallback)
     messages: list[str]
 
-    from cinepyle.config import LLM_API_KEY, LLM_MODEL, LLM_PROVIDER
+    from cinepyle.config import resolve_llm
 
-    api_key = LLM_API_KEY or settings.llm_api_key
-    provider_name = LLM_PROVIDER or settings.llm_provider
-    model = LLM_MODEL or settings.llm_model
+    provider_name, api_key, model = resolve_llm()
 
     if api_key:
         try:

@@ -23,8 +23,7 @@ from cinepyle.bot.nlp import (
     classify_intent,
     classify_intent_fallback,
 )
-from cinepyle.config import KOBIS_API_KEY, LLM_API_KEY, LLM_MODEL, LLM_PROVIDER
-from cinepyle.digest.settings import DigestSettings
+from cinepyle.config import KOBIS_API_KEY, resolve_llm
 from cinepyle.theaters.finder import find_nearest_theaters
 
 logger = logging.getLogger(__name__)
@@ -53,10 +52,7 @@ async def message_handler(
         return
 
     # Classify intent — resolve LLM credentials (env var > dashboard settings)
-    settings = DigestSettings.load()
-    provider = LLM_PROVIDER or settings.llm_provider
-    model = LLM_MODEL or settings.llm_model
-    api_key = LLM_API_KEY or settings.llm_api_key
+    provider, api_key, model = resolve_llm()
 
     if api_key:
         try:

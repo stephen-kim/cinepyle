@@ -344,7 +344,8 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
         intent=Intent.CHAT,
         reply=(
             "죄송해요, LLM API 키가 설정되지 않아 자연어 이해가 제한됩니다.\n"
-            "대시보드에서 LLM 설정을 하거나, 환경변수 LLM_PROVIDER / LLM_API_KEY를 설정해주세요.\n\n"
+            "환경변수 OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY 중 "
+            "하나 이상 설정하거나, 대시보드에서 설정해주세요.\n\n"
             "키워드로도 사용할 수 있어요:\n"
             "• 박스오피스 순위\n"
             "• 근처 영화관\n"
