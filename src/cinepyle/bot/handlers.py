@@ -63,6 +63,12 @@ async def message_handler(
             result = classify_intent(
                 user_text, provider, api_key, model=model, history=history,
             )
+            # If LLM returned chat but keywords suggest a specific intent,
+            # prefer the keyword match (LLM can be overly conservative with tool calls)
+            if result.intent == Intent.CHAT:
+                kw_result = classify_intent_fallback(user_text)
+                if kw_result.intent != Intent.CHAT:
+                    result = kw_result
         except Exception:
             logger.exception("LLM classification failed, using keyword fallback")
             result = classify_intent_fallback(user_text)

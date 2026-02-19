@@ -1,7 +1,8 @@
 """LLM-based intent classification for natural language Telegram messages.
 
-Classifies user messages into intents using the configured LLM provider,
-with a keyword-based fallback when LLM is unavailable.
+Classifies user messages into intents using native function calling (tool use)
+across OpenAI, Anthropic, and Google GenAI providers.
+Falls back to keyword-based classification when no LLM is available.
 """
 
 import json
@@ -35,68 +36,220 @@ class ClassificationResult:
 
 
 # ---------------------------------------------------------------------------
-# System prompt
+# Tool definitions (canonical, provider-agnostic)
 # ---------------------------------------------------------------------------
 
-INTENT_SYSTEM_PROMPT = """\
+TOOL_DEFINITIONS: list[dict] = [
+    {
+        "name": "showtime",
+        "description": "상영시간 조회. 사용자가 특정 지역, 시간, 날짜, 영화, 극장의 상영시간을 알고 싶을 때. 시간/지역/극장 언급이 있으면 book이 아니라 이것.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지 (반말, 이모지 포함)"},
+            "region": {"type": "string", "description": "지역명 (강남, 분당, 전국 등). 없으면 빈 문자열"},
+            "time": {"type": "string", "description": "시간 (원문 그대로). 없으면 빈 문자열"},
+            "date": {"type": "string", "description": "날짜 (원문 그대로). 없으면 빈 문자열"},
+            "movie": {"type": "string", "description": "영화 제목만. 없으면 빈 문자열"},
+            "theater": {"type": "string", "description": "구체적 극장명 (CGV용산 등). 없으면 빈 문자열"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "ranking",
+        "description": "박스오피스 순위, 인기 영화 차트 조회.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "nearby",
+        "description": "근처/주변/가까운 영화관 찾기. '근처 영화관', '가까운 극장', '영화관 어디', '주변 CGV' 등. 위치 확인은 봇이 따로 처리하므로 이 도구를 호출하면 됨.",
+        "parameters": {
+            "reply": {"type": "string", "description": "위치 전송을 요청하는 안내 메시지"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "theater_info",
+        "description": "특정 극장의 상세 정보 (상영관 수, IMAX 여부, 좌석수 등).",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "query": {"type": "string", "description": "극장명 검색어"},
+        },
+        "required": ["reply", "query"],
+    },
+    {
+        "name": "theater_list",
+        "description": "체인별/지역별 극장 목록 조회.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "chain": {"type": "string", "description": "CGV/롯데시네마/메가박스/씨네Q/독립영화관 중 하나. 없으면 빈 문자열"},
+            "region": {"type": "string", "description": "지역명. 없으면 빈 문자열"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "new_movies",
+        "description": "최근 개봉작, 신작, 개봉 예정 영화 조회.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "digest",
+        "description": "영화 뉴스, 소식, 다이제스트, 트렌드, 이슈, 기사, 업계 소식 조회. '뉴스 보여줘', '영화 소식', '다이제스트' 등.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "book",
+        "description": "예매 링크 안내. 단순히 '예매하고 싶어'처럼 시간/지역/극장 없이 예매 의사만 표현할 때.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "movie": {"type": "string", "description": "영화 제목. 없으면 빈 문자열"},
+            "chain": {"type": "string", "description": "CGV/롯데시네마/메가박스 중 하나. 없으면 빈 문자열"},
+        },
+        "required": ["reply"],
+    },
+    {
+        "name": "movie_info",
+        "description": "영화 정보 조회 (감독, 출연진, 장르, 러닝타임 등).",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "movie": {"type": "string", "description": "영화 제목만 (조사/접미사 제거). '영화 파묘에 누가 나와?' → '파묘'"},
+        },
+        "required": ["reply", "movie"],
+    },
+    {
+        "name": "preference",
+        "description": "선호 극장/상영관 관리 (추가, 삭제, 확인).",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "action": {"type": "string", "enum": ["add", "remove", "list"], "description": "add=추가/설정, remove=삭제/제거, list=확인/조회"},
+            "theater": {"type": "string", "description": "극장명. 없으면 빈 문자열"},
+            "screen_type": {"type": "string", "description": "상영관 타입 (IMAX, 4DX 등). 없으면 빈 문자열"},
+        },
+        "required": ["reply", "action"],
+    },
+    {
+        "name": "booking_history",
+        "description": "예매 내역/기록/확인 조회. '예매하고 싶다'는 book, '예매 내역 확인'은 이것.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "chain": {"type": "string", "description": "CGV/롯데시네마/메가박스 중 하나. 없으면 빈 문자열(전체)"},
+        },
+        "required": ["reply"],
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# System prompt (simplified — tool schemas describe intents)
+# ---------------------------------------------------------------------------
+
+TOOL_SYSTEM_PROMPT = """\
 당신은 한국 영화 알림봇 "Cinepyle"의 어시스턴트입니다.
-사용자의 메시지를 분석하여 적절한 의도(intent)를 판단하고, 자연스러운 한국어로 응답하세요.
+사용자의 메시지를 분석하여 적절한 도구(function)를 호출하세요.
 반말로 대화하되 친근하게 말해주세요. 이모지를 적절히 사용하세요.
 
-## 지원하는 기능 (intent)
+## 도구 호출 규칙
+- 사용자의 요청이 제공된 도구 중 하나에 해당하면, 반드시 해당 도구를 호출하세요. 직접 텍스트로 답변하지 마세요.
+- 도구를 호출하지 않는 경우는 오직: 일반 대화, 인사, 지원하지 않는 기능 요청뿐입니다.
+- 지원하지 않는 기능 요청: 해당 기능은 없다고 알려주고 비슷한 대체 기능을 제안하세요.
+- 예매/예약/티켓 → book. 근처/주변/가까운 영화관 → nearby. 상영시간/뭐해/뭐하 → showtime.
 
-| intent | 설명 | params |
-|---|---|---|
-| ranking | 박스오피스 순위, 인기 영화 | 없음 |
-| nearby | 근처 영화관 찾기 | 없음 |
-| theater_info | 특정 극장 정보 (상영관, IMAX, 좌석수 등) | {"query": "극장명"} |
-| theater_list | 체인/지역별 극장 목록 | {"chain": "", "region": ""} |
-| new_movies | 최근 개봉작 | 없음 |
-| digest | 영화 뉴스/소식 다이제스트 | 없음 |
-| book | 예매 링크 | {"movie": "", "chain": ""} |
-| showtime | 상영시간 조회 | {"region": "", "time": "", "date": "", "movie": "", "theater": ""} |
-| movie_info | 영화 정보 (감독, 출연진, 장르 등) | {"movie": "제목만"} |
-| preference | 선호 극장/상영관 관리 | {"action": "add|remove|list", "theater": "", "screen_type": ""} |
-| booking_history | 예매 내역 조회 | {"chain": ""} |
-| chat | 일반 대화, 인사, 지원하지 않는 요청 | 없음 |
+## 매핑 예시
+- "근처 영화관 찾아줘" / "가까운 영화관" / "주변 영화관 어디" → nearby 도구
+- "오늘 영화 뉴스" / "다이제스트" / "영화 소식" → digest 도구
+- "예매하고 싶어" / "티켓 끊고 싶어" → book 도구
+- "강남 영화 뭐해?" / "인터스텔라 상영관" → showtime 도구
 
-## JSON 응답 형식 (반드시 이 형식으로만)
-{"intent": "...", "reply": "...", "params": {}}
+## reply 작성 규칙
+- 도구 호출 시 reply 파라미터에 짧은 안내 메시지를 넣으세요 (실제 데이터는 봇이 따로 붙여줌).
+- nearby의 reply에는 위치 전송을 요청하는 안내를 넣으세요.
 
-## 규칙
-
-params 추출:
-- showtime: region은 지역명(분당, 강남 등), theater는 구체적 극장명(CGV용산 등), time/date는 원문 그대로, movie는 영화 제목만
-- movie_info: movie에 영화 제목만 넣기 (조사/접미사 제거). "영화 파묘에 누가 나와?" → {"movie": "파묘"}
-- theater_list: chain은 CGV/롯데시네마/메가박스/씨네Q/독립영화관 중 하나
-- preference: action은 add(추가/설정), remove(삭제/제거), list(확인/조회)
-- booking_history: chain은 CGV/롯데시네마/메가박스 중 하나 또는 빈 문자열(전체)
-
-intent 구분:
-- showtime vs book: 시간/지역/극장 언급 → showtime, 단순 "예매하고 싶어" → book
-- booking_history vs book: "예매 내역/기록/확인" → booking_history, "예매하고 싶다" → book
-- movie_info vs chat: 특정 영화의 감독/출연/장르/러닝타임 → movie_info
-- digest vs chat: 영화 뉴스/소식/다이제스트/트렌드/이슈/기사/업계 소식 → digest. "뉴스 보여줘", "영화 소식", "다이제스트" 등은 모두 digest
-- new_movies vs digest: 최근 개봉작/신작/개봉 예정 → new_movies, 뉴스/소식/기사/트렌드 → digest
-
-reply 작성:
-- 기능에 해당하는 intent면: 짧은 안내 메시지 (실제 데이터는 봇이 붙여줌)
-- nearby면: 위치 전송을 요청하는 안내
-- chat이면: 자연스럽게 대화하기. 인사에는 인사로, 질문에는 답변으로
-- 지원하지 않는 기능 요청: chat으로 분류하고, 해당 기능은 없다고 알려준 뒤 비슷한 대체 기능을 제안. 예: "리뷰 기능은 아직 없어! 대신 영화 정보나 박스오피스 순위를 볼 수 있어 🎬"
-- 영화와 관련 없는 일반 대화도 chat으로 자연스럽게 응답
-
-대화 맥락:
-- 이전 대화가 주어질 수 있음. 사용자의 후속 메시지는 이전 맥락의 보충/수정일 수 있으므로 이전 intent를 참고해서 판단
-- 예: 이전에 "인터스텔라 상영하는 극장?" → 봇이 지역을 물어봄 → "전국에서" → showtime intent, region="전국"
-- 예: 이전에 "영화 뭐해?" → 봇이 지역을 물어봄 → "강남" → showtime intent, region="강남"
-- 후속 메시지가 짧고 맥락 없이는 의미를 알기 어려운 경우, 이전 대화의 intent를 유지하고 빠진 정보를 채워넣기"""
+## 대화 맥락
+- 이전 대화가 주어질 수 있음. 후속 메시지는 이전 맥락의 보충/수정일 수 있으므로 이전 intent를 참고
+- 후속 메시지가 짧고 맥락 없이는 의미를 알기 어려운 경우, 이전 대화의 intent를 유지하고 빠진 정보를 채워넣기
+- 중요: 이전 대화에서 언급된 정보(영화 제목, 지역 등)를 params에 반드시 포함하세요"""
 
 
 # ---------------------------------------------------------------------------
-# LLM classification
+# Provider-specific tool format converters
 # ---------------------------------------------------------------------------
 
+
+def _openai_tools() -> list[dict]:
+    """Convert TOOL_DEFINITIONS to OpenAI tools format."""
+    tools = []
+    for td in TOOL_DEFINITIONS:
+        properties = {}
+        for name, schema in td["parameters"].items():
+            properties[name] = {k: v for k, v in schema.items()}
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": td["name"],
+                "description": td["description"],
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": td.get("required", []),
+                },
+            },
+        })
+    return tools
+
+
+def _anthropic_tools() -> list[dict]:
+    """Convert TOOL_DEFINITIONS to Anthropic tools format."""
+    tools = []
+    for td in TOOL_DEFINITIONS:
+        properties = {}
+        for name, schema in td["parameters"].items():
+            properties[name] = {k: v for k, v in schema.items()}
+        tools.append({
+            "name": td["name"],
+            "description": td["description"],
+            "input_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": td.get("required", []),
+            },
+        })
+    return tools
+
+
+def _google_tools():
+    """Convert TOOL_DEFINITIONS to Google GenAI tools format."""
+    from google.genai import types
+
+    declarations = []
+    for td in TOOL_DEFINITIONS:
+        properties = {}
+        for name, schema in td["parameters"].items():
+            kwargs = {"type": schema["type"].upper(), "description": schema.get("description", "")}
+            if "enum" in schema:
+                kwargs["enum"] = schema["enum"]
+            properties[name] = types.Schema(**kwargs)
+        declarations.append(types.FunctionDeclaration(
+            name=td["name"],
+            description=td["description"],
+            parameters=types.Schema(
+                type="OBJECT",
+                properties=properties,
+                required=td.get("required", []),
+            ),
+        ))
+    return types.Tool(function_declarations=declarations)
+
+
+# ---------------------------------------------------------------------------
+# LLM classification with function calling
+# ---------------------------------------------------------------------------
 
 _DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
@@ -112,7 +265,7 @@ def classify_intent(
     model: str = "",
     history: list[dict] | None = None,
 ) -> ClassificationResult:
-    """Classify user intent using the configured LLM provider.
+    """Classify user intent using native function calling (tool use).
 
     Uses the same provider/model conventions as digest/llm.py.
     ``history`` is a list of {"role": "user"|"assistant", "content": "..."}
@@ -132,14 +285,15 @@ def classify_intent(
         response = client.chat.completions.create(
             model=model or _DEFAULT_MODELS["openai"],
             messages=[
-                {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                {"role": "system", "content": TOOL_SYSTEM_PROMPT},
                 *messages,
             ],
-            response_format={"type": "json_object"},
+            tools=_openai_tools(),
+            tool_choice="auto",
             temperature=0.3,
             max_tokens=256,
         )
-        raw = response.choices[0].message.content or "{}"
+        return _extract_openai(response)
 
     elif provider_name == "anthropic":
         import anthropic
@@ -148,62 +302,110 @@ def classify_intent(
         response = client.messages.create(
             model=model or _DEFAULT_MODELS["anthropic"],
             max_tokens=256,
-            system=INTENT_SYSTEM_PROMPT,
+            system=TOOL_SYSTEM_PROMPT,
             messages=messages,
+            tools=_anthropic_tools(),
+            tool_choice={"type": "auto"},
         )
-        raw = response.content[0].text
+        return _extract_anthropic(response)
 
     elif provider_name == "google":
-        from google import genai
+        from google.genai import types
 
-        client = genai.Client(api_key=api_key)
-        # Google API: flatten history into prompt
-        history_text = ""
+        client = __import__("google.genai", fromlist=["genai"]).Client(api_key=api_key)
+
+        # Build proper multi-turn contents for Google
+        contents = []
         for turn in (history or []):
-            role_label = "사용자" if turn["role"] == "user" else "봇"
-            history_text += f"{role_label}: {turn['content']}\n"
-        prompt = (
-            f"{INTENT_SYSTEM_PROMPT}\n\n"
-            f"{history_text}사용자: {user_message}"
+            role = "user" if turn["role"] == "user" else "model"
+            contents.append(types.Content(
+                role=role,
+                parts=[types.Part.from_text(text=turn["content"])],
+            ))
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=user_message)],
+        ))
+
+        config = types.GenerateContentConfig(
+            system_instruction=TOOL_SYSTEM_PROMPT,
+            tools=[_google_tools()],
+            temperature=0.3,
+            max_output_tokens=256,
         )
         response = client.models.generate_content(
             model=model or _DEFAULT_MODELS["google"],
-            contents=prompt,
+            contents=contents,
+            config=config,
         )
-        raw = response.text or "{}"
+        return _extract_google(response)
 
     else:
         raise ValueError(f"Unknown LLM provider: {provider_name}")
 
-    return _parse_classification(raw)
-
 
 # ---------------------------------------------------------------------------
-# Response parsing
+# Response extraction (per provider)
 # ---------------------------------------------------------------------------
 
 
-def _parse_classification(raw: str) -> ClassificationResult:
-    """Parse LLM JSON response into ClassificationResult."""
-    text = raw.strip()
-    # Strip markdown code fences (same pattern as digest/llm.py)
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
+def _extract_openai(response) -> ClassificationResult:
+    """Extract ClassificationResult from OpenAI tool call response."""
+    message = response.choices[0].message
 
-    data = json.loads(text)
+    if message.tool_calls:
+        tc = message.tool_calls[0]
+        try:
+            intent = Intent(tc.function.name)
+        except ValueError:
+            return ClassificationResult(intent=Intent.CHAT, reply=message.content or "")
+        args = json.loads(tc.function.arguments)
+        reply = args.pop("reply", "")
+        return ClassificationResult(intent=intent, reply=reply, params=args)
 
-    intent_str = data.get("intent", "chat")
-    try:
-        intent = Intent(intent_str)
-    except ValueError:
-        intent = Intent.CHAT
+    # No tool call → chat
+    return ClassificationResult(intent=Intent.CHAT, reply=message.content or "")
 
-    reply = data.get("reply", "")
-    params = data.get("params", {})
-    return ClassificationResult(intent=intent, reply=reply, params=params)
+
+def _extract_anthropic(response) -> ClassificationResult:
+    """Extract ClassificationResult from Anthropic tool use response."""
+    tool_blocks = [b for b in response.content if b.type == "tool_use"]
+    text_blocks = [b for b in response.content if b.type == "text"]
+
+    if tool_blocks:
+        tb = tool_blocks[0]
+        try:
+            intent = Intent(tb.name)
+        except ValueError:
+            text = text_blocks[0].text if text_blocks else ""
+            return ClassificationResult(intent=Intent.CHAT, reply=text)
+        args = dict(tb.input)
+        reply = args.pop("reply", "")
+        return ClassificationResult(intent=intent, reply=reply, params=args)
+
+    # No tool call → chat
+    text = text_blocks[0].text if text_blocks else ""
+    return ClassificationResult(intent=Intent.CHAT, reply=text)
+
+
+def _extract_google(response) -> ClassificationResult:
+    """Extract ClassificationResult from Google GenAI function call response."""
+    parts = response.candidates[0].content.parts
+
+    for part in parts:
+        if part.function_call:
+            fc = part.function_call
+            try:
+                intent = Intent(fc.name)
+            except ValueError:
+                continue
+            args = dict(fc.args) if fc.args else {}
+            reply = args.pop("reply", "")
+            return ClassificationResult(intent=intent, reply=reply, params=args)
+
+    # No function call → chat
+    text_parts = [p.text for p in parts if p.text]
+    return ClassificationResult(intent=Intent.CHAT, reply="".join(text_parts))
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +538,7 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
                     break
             return ClassificationResult(
                 intent=Intent.BOOK,
-                reply="예매 링크를 준비할게요! 🎫",
+                reply="예매 링크를 준비할게요! :ticket:",
                 params={"movie": "", "chain": chain},
             )
 
