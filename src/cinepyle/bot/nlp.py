@@ -76,6 +76,8 @@ intent 구분:
 - showtime vs book: 시간/지역/극장 언급 → showtime, 단순 "예매하고 싶어" → book
 - booking_history vs book: "예매 내역/기록/확인" → booking_history, "예매하고 싶다" → book
 - movie_info vs chat: 특정 영화의 감독/출연/장르/러닝타임 → movie_info
+- digest vs chat: 영화 뉴스/소식/다이제스트/트렌드/이슈/기사/업계 소식 → digest. "뉴스 보여줘", "영화 소식", "다이제스트" 등은 모두 digest
+- new_movies vs digest: 최근 개봉작/신작/개봉 예정 → new_movies, 뉴스/소식/기사/트렌드 → digest
 
 reply 작성:
 - 기능에 해당하는 intent면: 짧은 안내 메시지 (실제 데이터는 봇이 붙여줌)
