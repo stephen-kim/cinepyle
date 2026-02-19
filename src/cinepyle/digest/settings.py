@@ -26,6 +26,7 @@ class DigestSettings:
 
     # LLM
     llm_provider: str = "openai"  # "openai" | "anthropic" | "google"
+    llm_model: str = ""  # empty = provider default
     llm_api_key: str = ""
 
     # Curation preferences (free text, passed to LLM)

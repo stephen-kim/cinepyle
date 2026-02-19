@@ -90,8 +90,15 @@ reply 작성:
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_MODELS: dict[str, str] = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-3-5-haiku-latest",
+    "google": "gemini-2.0-flash",
+}
+
+
 def classify_intent(
-    user_message: str, provider_name: str, api_key: str
+    user_message: str, provider_name: str, api_key: str, model: str = "",
 ) -> ClassificationResult:
     """Classify user intent using the configured LLM provider.
 
@@ -103,7 +110,7 @@ def classify_intent(
 
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model or _DEFAULT_MODELS["openai"],
             messages=[
                 {"role": "system", "content": INTENT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
@@ -119,7 +126,7 @@ def classify_intent(
 
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-3-5-haiku-latest",
+            model=model or _DEFAULT_MODELS["anthropic"],
             max_tokens=256,
             system=INTENT_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
@@ -132,7 +139,7 @@ def classify_intent(
         client = genai.Client(api_key=api_key)
         prompt = f"{INTENT_SYSTEM_PROMPT}\n\n{user_message}"
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=model or _DEFAULT_MODELS["google"],
             contents=prompt,
         )
         raw = response.text or "{}"

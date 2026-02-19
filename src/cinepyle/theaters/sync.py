@@ -61,6 +61,48 @@ CGV_REGION_CODES = [
     "07",   # 제주
 ]
 
+CGV_REGION_NAME: dict[str, str] = {
+    "01": "서울",
+    "02": "경기",
+    "202": "인천",
+    "03": "충청",
+    "04": "전라",
+    "05": "경상",
+    "06": "강원",
+    "07": "제주",
+}
+
+
+def _region_from_address(address: str) -> str:
+    """Extract broad region name from a Korean address string."""
+    addr = address.strip()
+    if not addr:
+        return ""
+    # Match metropolitan cities and provinces
+    _ADDR_REGION_MAP = [
+        ("서울", "서울"),
+        ("인천", "인천"),
+        ("대전", "충청"),
+        ("세종", "충청"),
+        ("대구", "경상"),
+        ("부산", "경상"),
+        ("울산", "경상"),
+        ("광주", "전라"),
+        ("경기", "경기"),
+        ("강원", "강원"),
+        ("충청북도", "충청"), ("충북", "충청"),
+        ("충청남도", "충청"), ("충남", "충청"),
+        ("전라북도", "전라"), ("전북", "전라"),
+        ("전라남도", "전라"), ("전남", "전라"),
+        ("경상북도", "경상"), ("경북", "경상"),
+        ("경상남도", "경상"), ("경남", "경상"),
+        ("제주", "제주"),
+    ]
+    for prefix, region in _ADDR_REGION_MAP:
+        if addr.startswith(prefix) or prefix in addr[:10]:
+            return region
+    return ""
+
 
 _cgv_session: requests.Session | None = None
 
@@ -157,6 +199,7 @@ def sync_cgv() -> list[Theater]:
                         f"{site.get('rpbldRdnmDaddr', '')}"
                     ).strip(),
                     "grad_list": site.get("rcmGradList", []),
+                    "region": CGV_REGION_NAME.get(region_code, ""),
                 }
         except Exception:
             logger.exception("CGV region %s sync failed", region_code)
@@ -234,6 +277,7 @@ def sync_cgv() -> list[Theater]:
             chain="cgv",
             theater_code=site_no,
             name=display_name,
+            region=info.get("region", ""),
             address=info.get("address", ""),
             latitude=lat,
             longitude=lon,
@@ -341,6 +385,7 @@ def sync_lotte() -> list[Theater]:
             chain="lotte",
             theater_code=cinema_id,
             name=f"{name} 롯데시네마",
+            region=_region_from_address(address),
             address=address,
             latitude=lat,
             longitude=lon,
@@ -445,6 +490,7 @@ def sync_megabox() -> list[Theater]:
             chain="megabox",
             theater_code=brch_no,
             name=f"{brch_name} 메가박스",
+            region=_region_from_address(address),
             address=address,
             latitude=lat,
             longitude=lon,
@@ -460,16 +506,34 @@ def sync_megabox() -> list[Theater]:
 # =========================================================================
 
 
+def _indie_region(raw_region: str) -> str:
+    """Extract broad region from indie data Region field like '서울 강남구'."""
+    if not raw_region:
+        return ""
+    first = raw_region.split()[0] if raw_region else ""
+    # Map to canonical region names
+    _MAP = {
+        "서울": "서울", "인천": "인천", "경기": "경기", "강원": "강원",
+        "충북": "충청", "충남": "충청", "대전": "충청", "세종": "충청",
+        "전북": "전라", "전남": "전라", "광주": "전라",
+        "경북": "경상", "경남": "경상", "대구": "경상", "부산": "경상", "울산": "경상",
+        "제주": "제주",
+    }
+    return _MAP.get(first, _region_from_address(raw_region))
+
+
 def sync_indie_cineq() -> list[Theater]:
     """Convert static indie/CineQ data to Theater objects."""
     theaters: list[Theater] = []
     for t in indie_static_data:
         chain = "cineq" if t.get("Type") == "cineq" else "indie"
+        raw_region = t.get("Region", "")
         theaters.append(Theater(
             chain=chain,
             theater_code=t.get("TheaterCode", t["TheaterName"]),
             name=t["TheaterName"],
-            address=t.get("Address", t.get("Region", "")),
+            region=_indie_region(raw_region),
+            address=t.get("Address", raw_region),
             latitude=float(t.get("Latitude", 0)),
             longitude=float(t.get("Longitude", 0)),
             screens=[],  # no screen info available

@@ -192,12 +192,16 @@ _PROVIDERS: dict[str, type[LLMProvider]] = {
 }
 
 
-def get_provider(provider_name: str, api_key: str) -> LLMProvider:
-    """Create an LLM provider by name."""
+def get_provider(
+    provider_name: str, api_key: str, model: str = "",
+) -> LLMProvider:
+    """Create an LLM provider by name, optionally overriding the model."""
     cls = _PROVIDERS.get(provider_name)
     if cls is None:
         raise ValueError(
             f"Unknown LLM provider: {provider_name!r}. "
             f"Choose from: {', '.join(_PROVIDERS)}"
         )
+    if model:
+        return cls(api_key, model=model)
     return cls(api_key)

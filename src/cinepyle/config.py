@@ -20,6 +20,7 @@ MEGABOX_PASSWORD: str = os.environ.get("MEGABOX_PASSWORD", "")
 
 # LLM (at least one provider required for NLP intent classification)
 LLM_PROVIDER: str = os.environ.get("LLM_PROVIDER", "")  # openai | anthropic | google
+LLM_MODEL: str = os.environ.get("LLM_MODEL", "")  # empty = provider default
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
 
 # Dashboard (optional)

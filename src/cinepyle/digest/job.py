@@ -30,16 +30,22 @@ async def send_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     # Step 2: LLM curation (with fallback)
     messages: list[str]
 
-    if settings.llm_api_key:
+    from cinepyle.config import LLM_API_KEY, LLM_MODEL, LLM_PROVIDER
+
+    api_key = LLM_API_KEY or settings.llm_api_key
+    provider_name = LLM_PROVIDER or settings.llm_provider
+    model = LLM_MODEL or settings.llm_model
+
+    if api_key:
         try:
-            provider = get_provider(settings.llm_provider, settings.llm_api_key)
+            provider = get_provider(provider_name, api_key, model=model)
             digest = provider.select_and_summarize(all_articles, settings.preferences)
             messages = format_digest_message(digest)
         except Exception:
             logger.exception("LLM curation failed, using fallback")
             messages = format_fallback_digest(all_articles)
     else:
-        logger.info("No LLM API key configured, using fallback digest")
+        logger.info("No LLM API key configured (env or settings), using fallback")
         messages = format_fallback_digest(all_articles)
 
     # Step 3: Send via Telegram
