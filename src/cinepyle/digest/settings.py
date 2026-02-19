@@ -24,13 +24,28 @@ class DigestSettings:
     schedule_hour: int = 9  # KST (0-23)
     schedule_minute: int = 0
 
-    # LLM
-    llm_provider: str = "openai"  # "openai" | "anthropic" | "google"
+    # LLM — per-provider API keys with priority ordering
+    llm_provider: str = "openai"  # primary provider (compat)
     llm_model: str = ""  # empty = provider default
-    llm_api_key: str = ""
+    llm_api_key: str = ""  # primary provider key (compat)
+
+    # Priority-ordered list of providers: ["openai", "anthropic", "google"]
+    llm_provider_order: list[str] = field(
+        default_factory=lambda: ["openai", "anthropic", "google"]
+    )
+    # Per-provider API keys: {"openai": "sk-...", "anthropic": "sk-...", ...}
+    llm_api_keys: dict[str, str] = field(default_factory=dict)
+    # Per-provider model overrides: {"openai": "gpt-4o", ...}
+    llm_models: dict[str, str] = field(default_factory=dict)
 
     # Curation preferences (free text, passed to LLM)
     preferences: str = ""
+
+    def active_llm_api_key(self, provider: str) -> str:
+        """Get the API key for a provider (per-provider key or legacy fallback)."""
+        return self.llm_api_keys.get(provider, "") or (
+            self.llm_api_key if provider == self.llm_provider else ""
+        )
 
     @classmethod
     def load(cls) -> "DigestSettings":

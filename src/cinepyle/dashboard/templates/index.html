@@ -15,11 +15,12 @@
       max-width: 700px;
       margin: 0 auto;
     }
-    .header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
-    .header h1 { font-size: 1.5rem; color: #fff; }
+    .header { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 1rem; }
+    .header h1 { font-size: 1.5rem; color: #fff; line-height: 1; }
     .header .settings-btn {
       background: none; border: none; color: #666; cursor: pointer;
-      font-size: 1.2rem; padding: 0.2rem; line-height: 1; transition: color 0.2s;
+      font-size: 1.6rem; padding: 0; line-height: 1; transition: color 0.2s;
+      display: flex; align-items: center;
     }
     .header .settings-btn:hover { color: #fff; }
     .header-right { margin-left: auto; display: flex; align-items: center; gap: 0.6rem; }
@@ -71,18 +72,20 @@
     .tabs { display: flex; gap: 0; margin-bottom: 1.5rem; }
     .tab {
       flex: 1; padding: 0.7rem; border: 1px solid #333;
-      background: #1a1a1a; color: #888; cursor: pointer;
-      font-size: 0.9rem; border-bottom: 2px solid transparent;
-      border-radius: 0;
+      background: #1a1a1a; color: #666; cursor: pointer;
+      font-size: 0.9rem; border-radius: 0;
+      transition: background 0.15s, color 0.15s;
     }
+    .tab + .tab { border-left: none; }
     .tab:first-child { border-radius: 6px 0 0 6px; }
     .tab:last-child { border-radius: 0 6px 6px 0; }
-    .tab.active { background: #222; color: #fff; border-bottom-color: #2563eb; }
+    .tab:hover { color: #ccc; }
+    .tab.active { background: #2563eb; color: #fff; border-color: #2563eb; }
 
     /* Env badge */
-    .env-field { opacity: 0.2; pointer-events: none; }
+    .env-field { opacity: 0.35; pointer-events: none; }
     .env-badge {
-      display: inline-block; font-size: 0.7rem; background: #1e3a5f; color: #93c5fd;
+      display: inline-block; font-size: 0.65rem; background: #1e3a5f; color: #93c5fd;
       padding: 0.1rem 0.5rem; border-radius: 3px; margin-left: 0.4rem;
       vertical-align: middle;
     }
@@ -96,7 +99,7 @@
     .settings-overlay.open { display: flex; }
     .settings-panel {
       background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
-      padding: 1.5rem; width: 100%; max-width: 600px;
+      padding: 1.5rem 2rem; width: 100%; max-width: 860px;
     }
     .settings-panel h2:first-child { margin-top: 0; }
     .settings-panel .close-btn {
@@ -104,13 +107,44 @@
       font-size: 1.5rem; cursor: pointer; padding: 0; margin: 0; line-height: 1;
     }
     .settings-panel .close-btn:hover { color: #fff; }
+    .settings-2col {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0 2rem;
+    }
+    .settings-2col .settings-col { min-width: 0; }
     .settings-group { margin-bottom: 1rem; }
     .settings-group-header {
       font-size: 0.9rem; font-weight: 600; color: #aaa; margin: 1rem 0 0.5rem;
       border-bottom: 1px solid #222; padding-bottom: 0.3rem;
     }
 
-    /* ===== Screen picker (region column view) ===== */
+    /* LLM provider cards with drag-and-drop */
+    .llm-providers { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+    .llm-card {
+      background: #222; border: 1px solid #333; border-radius: 8px;
+      padding: 0.6rem 0.8rem; cursor: grab; transition: all 0.2s;
+      position: relative;
+    }
+    .llm-card:active { cursor: grabbing; }
+    .llm-card.dragging { opacity: 0.5; border-color: #2563eb; }
+    .llm-card.drag-over { border-color: #2563eb; border-style: dashed; }
+    .llm-card-header {
+      display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;
+    }
+    .llm-card .drag-handle {
+      color: #555; font-size: 1rem; flex-shrink: 0; cursor: grab;
+    }
+    .llm-card .provider-name {
+      font-size: 0.85rem; font-weight: 600; color: #ccc;
+    }
+    .llm-card .priority-badge {
+      font-size: 0.6rem; background: #2563eb33; color: #93c5fd;
+      padding: 0.05rem 0.4rem; border-radius: 3px; margin-left: auto;
+    }
+    .llm-card label { margin: 0.2rem 0; font-size: 0.8rem; }
+    .llm-card input { font-size: 0.8rem; padding: 0.35rem 0.6rem; }
+    .llm-card .hint { font-size: 0.7rem; }
+
+    /* ===== Screen picker (3-level: region → sub-region → theater) ===== */
     .screen-picker { margin-top: 0.5rem; }
 
     /* Selected chips */
@@ -141,26 +175,41 @@
     }
     .screen-search::placeholder { color: #555; }
 
-    /* Region columns */
+    /* 3-column region container */
     .region-container {
       display: flex; border: 1px solid #333; border-radius: 6px;
-      overflow: hidden; height: 350px;
+      overflow: hidden; height: 380px;
     }
+
+    /* Left column: region list */
     .region-list {
-      width: 90px; min-width: 90px; background: #151515; border-right: 1px solid #333;
+      width: 70px; min-width: 70px; background: #151515; border-right: 1px solid #333;
       overflow-y: auto; flex-shrink: 0;
     }
     .region-item {
-      padding: 0.5rem 0.6rem; font-size: 0.8rem; color: #888;
+      padding: 0.5rem 0.5rem; font-size: 0.8rem; color: #888;
       cursor: pointer; border-bottom: 1px solid #1a1a1a;
-      transition: all 0.15s;
+      transition: all 0.15s; text-align: center;
     }
     .region-item:hover { background: #1a1a1a; color: #ccc; }
     .region-item.active { background: #222; color: #fff; border-left: 2px solid #2563eb; }
-    .region-item .count { font-size: 0.65rem; color: #555; margin-left: 0.2rem; }
-    .region-item.active .count { color: #888; }
 
-    /* Theater list (right side) */
+    /* Middle column: sub-region list */
+    .subregion-list {
+      width: 90px; min-width: 90px; background: #181818; border-right: 1px solid #333;
+      overflow-y: auto; flex-shrink: 0;
+    }
+    .subregion-item {
+      padding: 0.4rem 0.5rem; font-size: 0.78rem; color: #888;
+      cursor: pointer; border-bottom: 1px solid #1a1a1a;
+      transition: all 0.15s;
+    }
+    .subregion-item:hover { background: #1f1f1f; color: #ccc; }
+    .subregion-item.active { background: #252525; color: #fff; border-left: 2px solid #2563eb; }
+    .subregion-item .count { font-size: 0.6rem; color: #555; margin-left: 0.15rem; }
+    .subregion-item.active .count { color: #888; }
+
+    /* Right column: theater list */
     .theater-list {
       flex: 1; overflow-y: auto; padding: 0.4rem;
     }
@@ -234,7 +283,8 @@
       <a href="https://github.com/stephen-kim/cinepyle" target="_blank" rel="noopener" class="gh-link" title="GitHub">
         <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
-      <a href="https://github.com/stephen-kim/cinepyle" target="_blank" rel="noopener" class="gh-star" title="Star on GitHub">
+      <a href="https://github.com/stephen-kim/cinepyle/stargazers" target="_blank" rel="noopener" class="gh-star" title="Star on GitHub" id="gh-star-btn"
+        onclick="event.preventDefault(); window.open('https://github.com/login?return_to=%2Fstephen-kim%2Fcinepyle', '_blank');">
         <svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>
         Star
       </a>
@@ -248,17 +298,17 @@
     <div class="settings-panel">
       <button type="button" class="close-btn" onclick="toggleSettings()">&times;</button>
 
-      <h2>API Keys &amp; Credentials</h2>
+      <h2>Settings</h2>
 
       {% macro credential_field(label, name, env_key, type="password", placeholder="") %}
       <label>
         {{ label }}
         {% if env_vars.get(env_key) %}
-          <span class="env-badge">env</span>
+          <span class="env-badge">환경변수를 통해 설정됨</span>
         {% endif %}
         <input type="{{ type }}" name="{{ name }}"
           class="{% if env_vars.get(env_key) %}env-field{% endif %}"
-          placeholder="{% if env_vars.get(env_key) %}env{% else %}{{ placeholder or '입력하세요' }}{% endif %}"
+          placeholder="{% if env_vars.get(env_key) %}환경변수를 통해 설정됨{% else %}{{ placeholder or '입력하세요' }}{% endif %}"
           autocomplete="off"
           {% if env_vars.get(env_key) %}disabled{% endif %}>
       </label>
@@ -266,64 +316,96 @@
 
       <form method="post" action="/settings/credentials">
 
-        <div class="settings-group-header">LLM</div>
-        <label>
-          LLM Provider
-          {% if env_vars.get("LLM_PROVIDER") %}
-            <span class="env-badge">env</span>
-          {% endif %}
-          <select name="llm_provider" {% if env_vars.get("LLM_PROVIDER") %}class="env-field" disabled{% endif %}>
-            <option value="openai" {{ "selected" if settings.llm_provider == "openai" }}>OpenAI</option>
-            <option value="anthropic" {{ "selected" if settings.llm_provider == "anthropic" }}>Anthropic</option>
-            <option value="google" {{ "selected" if settings.llm_provider == "google" }}>Google</option>
-          </select>
-        </label>
-        <label>
-          Model
-          {% if env_vars.get("LLM_MODEL") %}
-            <span class="env-badge">env</span>
-          {% endif %}
-          <input type="text" name="llm_model"
-            class="{% if env_vars.get('LLM_MODEL') %}env-field{% endif %}"
-            value="{{ settings.llm_model }}"
-            placeholder="{% if env_vars.get('LLM_MODEL') %}env{% else %}기본값 사용 (비워두면 자동){% endif %}"
-            {% if env_vars.get("LLM_MODEL") %}disabled{% endif %}>
-        </label>
-        <p class="hint">OpenAI: gpt-4o-mini, gpt-4o, gpt-4.5-preview &middot; Anthropic: claude-3-5-haiku-latest, claude-sonnet-4-20250514 &middot; Google: gemini-2.0-flash</p>
-        {{ credential_field("LLM API Key", "llm_api_key", "LLM_API_KEY", placeholder="설정됨" if settings.llm_api_key else "") }}
+        <div class="settings-2col">
+          <!-- Left column: LLM -->
+          <div class="settings-col">
+            <div class="settings-group-header">LLM 프로바이더 (드래그로 우선순위 변경)</div>
+            {% if env_vars.get("LLM_PROVIDER") %}
+              <p style="font-size:0.8rem; margin-bottom:0.5rem;">
+                <span class="env-badge">환경변수를 통해 설정됨</span>
+              </p>
+            {% endif %}
 
-        <div class="settings-group-header">Telegram</div>
-        {{ credential_field("Bot Token", "telegram_bot_token", "TELEGRAM_BOT_TOKEN") }}
-        {{ credential_field("Chat ID", "telegram_chat_id", "TELEGRAM_CHAT_ID", type="text") }}
+            <div class="llm-providers" id="llm-providers">
+              {% set provider_order = settings.llm_provider_order or ["openai", "anthropic", "google"] %}
+              {% set provider_labels = {"openai": "OpenAI", "anthropic": "Anthropic", "google": "Google"} %}
+              {% set provider_models = {
+                "openai": "gpt-4o-mini, gpt-4o, gpt-4.5-preview",
+                "anthropic": "claude-3-5-haiku-latest, claude-sonnet-4-20250514",
+                "google": "gemini-2.0-flash"
+              } %}
+              {% set provider_env_keys = {
+                "openai": "OPENAI_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+                "google": "GOOGLE_API_KEY"
+              } %}
+              {% for provider in provider_order %}
+              {% set env_key = provider_env_keys.get(provider, "") %}
+              <div class="llm-card" draggable="true" data-provider="{{ provider }}"
+                ondragstart="dragStart(event)" ondragover="dragOver(event)"
+                ondrop="dropCard(event)" ondragend="dragEnd(event)"
+                ondragenter="dragEnter(event)" ondragleave="dragLeave(event)">
+                <div class="llm-card-header">
+                  <span class="drag-handle">&#9776;</span>
+                  <span class="provider-name">{{ provider_labels.get(provider, provider) }}</span>
+                  <span class="priority-badge">{{ loop.index }}순위</span>
+                </div>
+                <input type="hidden" name="llm_provider_order" value="{{ provider }}">
+                <label>
+                  API Key
+                  {% if env_vars.get(env_key) %}
+                    <span class="env-badge">환경변수를 통해 설정됨</span>
+                  {% endif %}
+                  <input type="password" name="llm_api_key_{{ provider }}"
+                    class="{% if env_vars.get(env_key) %}env-field{% endif %}"
+                    placeholder="{% if env_vars.get(env_key) %}환경변수를 통해 설정됨{% elif settings.llm_api_keys.get(provider) or (settings.llm_api_key and settings.llm_provider == provider) %}설정됨{% else %}입력하세요{% endif %}"
+                    autocomplete="off"
+                    {% if env_vars.get(env_key) %}disabled{% endif %}>
+                </label>
+                <label>
+                  Model
+                  <input type="text" name="llm_model_{{ provider }}"
+                    value="{{ settings.llm_models.get(provider, '') }}"
+                    placeholder="기본값: {{ provider_models.get(provider, '') }}">
+                </label>
+              </div>
+              {% endfor %}
+            </div>
+            <p class="hint" style="margin-top:0.4rem;">위에서부터 높은 우선순위. 키가 있는 첫 번째 프로바이더가 사용됩니다.</p>
+          </div>
 
-        <div class="settings-group-header">KOFIC (영진위)</div>
-        {{ credential_field("API Key", "kofic_api_key", "KOFIC_API_KEY") }}
+          <!-- Right column: Credentials -->
+          <div class="settings-col">
+            <div class="settings-group-header">Telegram</div>
+            {{ credential_field("Bot Token", "telegram_bot_token", "TELEGRAM_BOT_TOKEN") }}
+            {{ credential_field("Chat ID", "telegram_chat_id", "TELEGRAM_CHAT_ID", type="text") }}
 
-        <div class="settings-group-header">Naver Map</div>
-        {{ credential_field("Client ID", "naver_map_client_id", "NAVER_MAP_CLIENT_ID", type="text") }}
-        {{ credential_field("Client Secret", "naver_map_client_secret", "NAVER_MAP_CLIENT_SECRET") }}
+            <div class="settings-group-header">KOFIC (영진위)</div>
+            {{ credential_field("API Key", "kofic_api_key", "KOFIC_API_KEY") }}
 
-        <div class="settings-group-header">Watcha</div>
-        {{ credential_field("Email", "watcha_email", "WATCHA_EMAIL", type="text") }}
-        {{ credential_field("Password", "watcha_password", "WATCHA_PASSWORD") }}
+            <div class="settings-group-header">Naver Map</div>
+            {{ credential_field("Client ID", "naver_map_client_id", "NAVER_MAP_CLIENT_ID", type="text") }}
+            {{ credential_field("Client Secret", "naver_map_client_secret", "NAVER_MAP_CLIENT_SECRET") }}
 
-        <div class="settings-group-header">CGV</div>
-        {{ credential_field("ID", "cgv_id", "CGV_ID", type="text") }}
-        {{ credential_field("Password", "cgv_password", "CGV_PASSWORD") }}
+            <div class="settings-group-header">Watcha</div>
+            {{ credential_field("Email", "watcha_email", "WATCHA_EMAIL", type="text") }}
+            {{ credential_field("Password", "watcha_password", "WATCHA_PASSWORD") }}
 
-        <div class="settings-group-header">Lotte Cinema</div>
-        {{ credential_field("ID", "lotte_id", "LOTTE_ID", type="text") }}
-        {{ credential_field("Password", "lotte_password", "LOTTE_PASSWORD") }}
+            <div class="settings-group-header">CGV</div>
+            {{ credential_field("ID", "cgv_id", "CGV_ID", type="text") }}
+            {{ credential_field("Password", "cgv_password", "CGV_PASSWORD") }}
 
-        <div class="settings-group-header">MegaBox</div>
-        {{ credential_field("ID", "megabox_id", "MEGABOX_ID", type="text") }}
-        {{ credential_field("Password", "megabox_password", "MEGABOX_PASSWORD") }}
+            <div class="settings-group-header">Lotte Cinema</div>
+            {{ credential_field("ID", "lotte_id", "LOTTE_ID", type="text") }}
+            {{ credential_field("Password", "lotte_password", "LOTTE_PASSWORD") }}
 
-        <p class="hint" style="margin-top: 1rem;">
-          <span class="env-badge">env</span> 표시된 항목은 환경변수(.env)로 설정됨. 변경하려면 .env 파일을 수정하세요.
-        </p>
+            <div class="settings-group-header">MegaBox</div>
+            {{ credential_field("ID", "megabox_id", "MEGABOX_ID", type="text") }}
+            {{ credential_field("Password", "megabox_password", "MEGABOX_PASSWORD") }}
+          </div>
+        </div>
 
-        <div class="actions">
+        <div class="actions" style="margin-top: 1rem;">
           <button type="submit" class="primary">저장</button>
           <button type="button" class="secondary" onclick="toggleSettings()">닫기</button>
         </div>
@@ -448,65 +530,85 @@
         <input type="text" class="screen-search" id="screen-search"
           placeholder="극장 또는 상영관 검색..." oninput="filterTheaters(this.value)">
 
-        <!-- Region column view -->
+        <!-- 3-level region picker: region → sub-region → theaters -->
         {% if regions %}
         <div class="region-container">
           <!-- Left: region list -->
           <div class="region-list" id="region-list">
-            {% for region_name, theaters in regions.items() %}
+            {% for region_name in regions.keys() %}
             <div class="region-item {% if loop.first %}active{% endif %}"
               data-region="{{ region_name }}"
               onclick="selectRegion(this, '{{ region_name }}')">
-              {{ region_name }}<span class="count">{{ theaters|length }}</span>
+              {{ region_name }}
             </div>
             {% endfor %}
           </div>
 
-          <!-- Right: theater list per region -->
+          <!-- Middle: sub-region list -->
+          <div class="subregion-list" id="subregion-list">
+            {% set first_region = regions.keys()|list|first %}
+            {% for region_name, sub_regions in regions.items() %}
+              {% for sub_name, theaters in sub_regions.items() %}
+              <div class="subregion-item {% if region_name == first_region and loop.first %}active{% endif %}"
+                data-region="{{ region_name }}"
+                data-subregion="{{ sub_name }}"
+                onclick="selectSubRegion(this, '{{ region_name }}', '{{ sub_name }}')"
+                style="{% if region_name != first_region %}display:none{% endif %}">
+                {{ sub_name }}<span class="count">{{ theaters|length }}</span>
+              </div>
+              {% endfor %}
+            {% endfor %}
+          </div>
+
+          <!-- Right: theater list -->
           <div class="theater-list" id="theater-list">
             {% set first_region = regions.keys()|list|first %}
-            {% for region_name, theaters in regions.items() %}
-              {% for theater in theaters %}
-              <div class="theater-entry"
-                data-region="{{ region_name }}"
-                data-name="{{ theater.name|lower }}"
-                data-chain="{{ theater.chain }}"
-                style="{% if region_name != first_region %}display:none{% endif %}">
-                <div class="theater-name-row" onclick="toggleTheaterScreens(this)">
-                  <span class="chain-badge {{ theater.chain }}">{{ theater.chain|upper }}</span>
-                  <span class="theater-name-text">{{ theater.name }}</span>
+            {% set first_sub = regions[first_region].keys()|list|first if first_region else '' %}
+            {% for region_name, sub_regions in regions.items() %}
+              {% for sub_name, theaters in sub_regions.items() %}
+                {% for theater in theaters %}
+                <div class="theater-entry"
+                  data-region="{{ region_name }}"
+                  data-subregion="{{ sub_name }}"
+                  data-name="{{ theater.name|lower }}"
+                  data-chain="{{ theater.chain }}"
+                  style="{% if region_name != first_region or sub_name != first_sub %}display:none{% endif %}">
+                  <div class="theater-name-row" onclick="toggleTheaterScreens(this)">
+                    <span class="chain-badge {{ theater.chain }}">{{ theater.chain|upper }}</span>
+                    <span class="theater-name-text">{{ theater.name }}</span>
+                    {% if theater.screens %}
+                    <span class="expand-arrow">&#9654;</span>
+                    {% endif %}
+                  </div>
                   {% if theater.screens %}
-                  <span class="expand-arrow">&#9654;</span>
+                  <div class="theater-screens">
+                    {% for screen in theater.screens %}
+                    <label class="screen-item {% if screen.is_special %}special{% endif %}"
+                      data-screen-name="{{ screen.name|lower }}">
+                      <input type="checkbox" name="watched_screens"
+                        value="{{ theater.chain }}:{{ theater.theater_code }}:{{ screen.screen_id }}"
+                        data-theater-name="{{ theater.name }}"
+                        data-screen-name="{{ screen.name }}"
+                        data-chain="{{ theater.chain }}"
+                        {{ "checked" if screen_settings.is_watching(theater.chain ~ ':' ~ theater.theater_code ~ ':' ~ screen.screen_id) }}
+                        onchange="updateChips()">
+                      <span>{{ screen.name }}</span>
+                      {% if screen.screen_type != "normal" %}
+                        <span class="screen-badge">{{ screen.screen_type }}</span>
+                      {% endif %}
+                      {% if screen.seat_count > 0 %}
+                        <span class="screen-seats">{{ screen.seat_count }}석</span>
+                      {% endif %}
+                    </label>
+                    {% endfor %}
+                  </div>
+                  {% else %}
+                  <div class="theater-screens">
+                    <div class="no-screens">상영관 정보 없음 (동기화 필요)</div>
+                  </div>
                   {% endif %}
                 </div>
-                {% if theater.screens %}
-                <div class="theater-screens">
-                  {% for screen in theater.screens %}
-                  <label class="screen-item {% if screen.is_special %}special{% endif %}"
-                    data-screen-name="{{ screen.name|lower }}">
-                    <input type="checkbox" name="watched_screens"
-                      value="{{ theater.chain }}:{{ theater.theater_code }}:{{ screen.screen_id }}"
-                      data-theater-name="{{ theater.name }}"
-                      data-screen-name="{{ screen.name }}"
-                      data-chain="{{ theater.chain }}"
-                      {{ "checked" if screen_settings.is_watching(theater.chain ~ ':' ~ theater.theater_code ~ ':' ~ screen.screen_id) }}
-                      onchange="updateChips()">
-                    <span>{{ screen.name }}</span>
-                    {% if screen.screen_type != "normal" %}
-                      <span class="screen-badge">{{ screen.screen_type }}</span>
-                    {% endif %}
-                    {% if screen.seat_count > 0 %}
-                      <span class="screen-seats">{{ screen.seat_count }}석</span>
-                    {% endif %}
-                  </label>
-                  {% endfor %}
-                </div>
-                {% else %}
-                <div class="theater-screens">
-                  <div class="no-screens">상영관 정보 없음 (동기화 필요)</div>
-                </div>
-                {% endif %}
-              </div>
+                {% endfor %}
               {% endfor %}
             {% endfor %}
           </div>
@@ -623,37 +725,61 @@
       document.getElementById('settings-overlay').classList.toggle('open');
     }
 
-    // ==================== Region column view ====================
+    // ==================== 3-level region navigation ====================
     var currentRegion = '';
+    var currentSubRegion = '';
 
     function selectRegion(el, region) {
-      // Update active state
+      // Update region active state
       document.querySelectorAll('.region-item').forEach(function(r) {
         r.classList.remove('active');
       });
       el.classList.add('active');
       currentRegion = region;
 
-      // Show/hide theaters
-      var searchVal = document.getElementById('screen-search').value.toLowerCase();
-      showTheatersForRegion(region, searchVal);
+      // Show sub-regions for this region, hide others
+      var firstSub = null;
+      document.querySelectorAll('.subregion-item').forEach(function(s) {
+        if (s.dataset.region === region) {
+          s.style.display = '';
+          if (!firstSub) firstSub = s;
+        } else {
+          s.style.display = 'none';
+          s.classList.remove('active');
+        }
+      });
+
+      // Auto-select first sub-region
+      if (firstSub) {
+        document.querySelectorAll('.subregion-item').forEach(function(s) {
+          s.classList.remove('active');
+        });
+        firstSub.classList.add('active');
+        currentSubRegion = firstSub.dataset.subregion;
+        showTheatersForSubRegion(region, currentSubRegion);
+      }
     }
 
-    function showTheatersForRegion(region, search) {
+    function selectSubRegion(el, region, subRegion) {
+      // Update sub-region active state
+      document.querySelectorAll('.subregion-item').forEach(function(s) {
+        s.classList.remove('active');
+      });
+      el.classList.add('active');
+      currentSubRegion = subRegion;
+
+      showTheatersForSubRegion(region, subRegion);
+    }
+
+    function showTheatersForSubRegion(region, subRegion) {
       document.querySelectorAll('.theater-entry').forEach(function(entry) {
-        var matchRegion = entry.dataset.region === region;
-        var matchSearch = true;
-        if (search) {
-          var name = entry.dataset.name || '';
-          // Also check screen names within
-          var screenNames = [];
-          entry.querySelectorAll('[data-screen-name]').forEach(function(s) {
-            screenNames.push(s.dataset.screenName);
-          });
-          var allText = name + ' ' + screenNames.join(' ');
-          matchSearch = allText.indexOf(search) !== -1;
-        }
-        entry.style.display = (matchRegion && matchSearch) ? '' : 'none';
+        var match = entry.dataset.region === region && entry.dataset.subregion === subRegion;
+        entry.style.display = match ? '' : 'none';
+        // Collapse screens when switching
+        var screens = entry.querySelector('.theater-screens');
+        var arrow = entry.querySelector('.expand-arrow');
+        if (screens) screens.classList.remove('open');
+        if (arrow) arrow.classList.remove('open');
       });
     }
 
@@ -662,8 +788,8 @@
       var q = query.toLowerCase().trim();
 
       if (q) {
-        // Search across ALL regions — show all matching theaters regardless of region
-        var matchedRegions = {};
+        // Search across ALL regions — show all matching theaters
+        // Hide sub-region column during search
         document.querySelectorAll('.theater-entry').forEach(function(entry) {
           var name = entry.dataset.name || '';
           var screenNames = [];
@@ -674,7 +800,6 @@
           var match = allText.indexOf(q) !== -1;
           entry.style.display = match ? '' : 'none';
           if (match) {
-            matchedRegions[entry.dataset.region] = true;
             // Auto-expand screens when searching
             var screens = entry.querySelector('.theater-screens');
             var arrow = entry.querySelector('.expand-arrow');
@@ -683,10 +808,12 @@
           }
         });
       } else {
-        // No search — show current region only, collapse all
+        // No search — restore current region/sub-region view
         var region = currentRegion || document.querySelector('.region-item.active')?.dataset.region || '';
+        var subRegion = currentSubRegion || document.querySelector('.subregion-item.active')?.dataset.subregion || '';
         document.querySelectorAll('.theater-entry').forEach(function(entry) {
-          entry.style.display = entry.dataset.region === region ? '' : 'none';
+          var match = entry.dataset.region === region && entry.dataset.subregion === subRegion;
+          entry.style.display = match ? '' : 'none';
           // Collapse screens
           var screens = entry.querySelector('.theater-screens');
           var arrow = entry.querySelector('.expand-arrow');
@@ -748,12 +875,76 @@
       }
     }
 
+    // ==================== LLM card drag-and-drop ====================
+    var draggedCard = null;
+
+    function dragStart(e) {
+      draggedCard = e.currentTarget;
+      draggedCard.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    }
+
+    function dragEnd(e) {
+      if (draggedCard) draggedCard.classList.remove('dragging');
+      document.querySelectorAll('.llm-card').forEach(function(c) {
+        c.classList.remove('drag-over');
+      });
+      draggedCard = null;
+      updatePriorityBadges();
+    }
+
+    function dragOver(e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    }
+
+    function dragEnter(e) {
+      e.preventDefault();
+      var card = e.currentTarget;
+      if (card !== draggedCard) card.classList.add('drag-over');
+    }
+
+    function dragLeave(e) {
+      e.currentTarget.classList.remove('drag-over');
+    }
+
+    function dropCard(e) {
+      e.preventDefault();
+      var target = e.currentTarget;
+      target.classList.remove('drag-over');
+      if (!draggedCard || target === draggedCard) return;
+
+      var container = document.getElementById('llm-providers');
+      var cards = Array.from(container.querySelectorAll('.llm-card'));
+      var dragIdx = cards.indexOf(draggedCard);
+      var targetIdx = cards.indexOf(target);
+
+      if (dragIdx < targetIdx) {
+        container.insertBefore(draggedCard, target.nextSibling);
+      } else {
+        container.insertBefore(draggedCard, target);
+      }
+      updatePriorityBadges();
+    }
+
+    function updatePriorityBadges() {
+      var cards = document.querySelectorAll('#llm-providers .llm-card');
+      cards.forEach(function(card, i) {
+        var badge = card.querySelector('.priority-badge');
+        if (badge) badge.textContent = (i + 1) + '순위';
+      });
+    }
+
     // ==================== Init ====================
     (function() {
-      // Set initial region
+      // Set initial region & sub-region
       var firstRegion = document.querySelector('.region-item.active');
       if (firstRegion) {
         currentRegion = firstRegion.dataset.region;
+      }
+      var firstSub = document.querySelector('.subregion-item.active');
+      if (firstSub) {
+        currentSubRegion = firstSub.dataset.subregion;
       }
       // Build initial chips
       updateChips();
