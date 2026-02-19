@@ -1,10 +1,11 @@
 services:
   cinepyle:
     build: .
+    pull_policy: always
     env_file:
       - .env
     ports:
-      - "${DASHBOARD_PORT:-8080}:8080"
+      - "${DASHBOARD_PORT:-8080}:${DASHBOARD_PORT:-8080}"
     volumes:
       - cinepyle-data:/app/data
     restart: unless-stopped
