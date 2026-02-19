@@ -341,10 +341,19 @@ async def _ensure_megabox_login(page: Page) -> bool:
     except Exception:
         pass
 
-    # Fill login form
+    # Fill login form (MegaBox changed input IDs as of Feb 2025)
     try:
-        await page.fill("#ibxMbId", MEGABOX_ID)
-        await page.fill("#ibxLoginPwd", MEGABOX_PASSWORD)
+        id_input = page.locator("#ibxLoginId")
+        pw_input = page.locator("#ibxLoginPwd")
+        await id_input.click()
+        await id_input.type(MEGABOX_ID, delay=50)
+        await pw_input.click()
+        await pw_input.type(MEGABOX_PASSWORD, delay=50)
+        # Force-enable button in case validation didn't fire
+        await page.evaluate(
+            'document.getElementById("btnLogin") && '
+            '(document.getElementById("btnLogin").disabled = false)'
+        )
         await page.click("#btnLogin")
         await page.wait_for_load_state("networkidle", timeout=15000)
         await asyncio.sleep(1)

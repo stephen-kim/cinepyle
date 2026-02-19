@@ -25,6 +25,7 @@ class Intent(Enum):
     MOVIE_INFO = "movie_info"
     PREFERENCE = "preference"
     BOOKING_HISTORY = "booking_history"
+    SEAT_MAP = "seat_map"
     CHAT = "chat"
 
 
@@ -143,6 +144,19 @@ TOOL_DEFINITIONS: list[dict] = [
         },
         "required": ["reply"],
     },
+    {
+        "name": "seat_map",
+        "description": "좌석 배치도/좌석도 보기. 특정 상영 회차의 좌석 현황 이미지. '좌석 보여줘', '자리 보여줘', '좌석 배치도', '어디 남았어' 등.",
+        "parameters": {
+            "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
+            "region": {"type": "string", "description": "지역명. 없으면 빈 문자열"},
+            "theater": {"type": "string", "description": "극장명. 없으면 빈 문자열"},
+            "movie": {"type": "string", "description": "영화 제목. 없으면 빈 문자열"},
+            "time": {"type": "string", "description": "시간. 없으면 빈 문자열"},
+            "date": {"type": "string", "description": "날짜. 없으면 빈 문자열"},
+        },
+        "required": ["reply"],
+    },
 ]
 
 
@@ -166,6 +180,7 @@ TOOL_SYSTEM_PROMPT = """\
 - "오늘 영화 뉴스" / "다이제스트" / "영화 소식" → digest 도구
 - "예매하고 싶어" / "티켓 끊고 싶어" → book 도구
 - "강남 영화 뭐해?" / "인터스텔라 상영관" → showtime 도구
+- "좌석 보여줘" / "자리 보여줘" / "좌석 배치도" → seat_map 도구
 
 ## reply 작성 규칙
 - 도구 호출 시 reply 파라미터에 짧은 안내 메시지를 넣으세요 (실제 데이터는 봇이 따로 붙여줌).
@@ -436,7 +451,8 @@ _CHAIN_KEYWORDS = {
     "예술영화관": "독립영화관",
 }
 
-_THEATER_INFO_KEYWORDS = ["상영관", "스크린", "imax", "아이맥스", "4dx", "돌비", "좌석"]
+_SEAT_MAP_KEYWORDS = ["좌석 보여", "좌석 배치", "좌석도", "좌석 현황", "자리 보여", "좌석 사진", "seat map"]
+_THEATER_INFO_KEYWORDS = ["상영관", "스크린", "imax", "아이맥스", "4dx", "돌비"]
 
 
 def classify_intent_fallback(user_message: str) -> ClassificationResult:
@@ -471,6 +487,15 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
                 intent=Intent.MOVIE_INFO,
                 reply="영화 정보를 검색할게요!",
                 params={"movie": user_message},
+            )
+
+    # Seat map (before showtime — "좌석 보여줘" contains time signals like "시")
+    for kw in _SEAT_MAP_KEYWORDS:
+        if kw in msg:
+            return ClassificationResult(
+                intent=Intent.SEAT_MAP,
+                reply="좌석 배치도를 가져올게요!",
+                params={"region": "", "theater": user_message, "movie": "", "time": "", "date": ""},
             )
 
     # Showtime

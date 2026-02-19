@@ -127,6 +127,10 @@ async def message_handler(
         await update.message.reply_text(result.reply)
         await _do_booking_history(update, result.params)
 
+    elif result.intent == Intent.SEAT_MAP:
+        await update.message.reply_text(result.reply)
+        await _do_seat_map(update, result.params)
+
     else:  # Intent.CHAT
         await update.message.reply_text(result.reply)
 
@@ -914,6 +918,152 @@ async def _do_showtime(update: Update, params: dict) -> None:
         text = text[:4090] + "\n..."
 
     await update.message.reply_text(text)
+
+
+# ---------------------------------------------------------------------------
+# Seat map
+# ---------------------------------------------------------------------------
+
+
+async def _do_seat_map(update: Update, params: dict) -> None:
+    """Capture and send a seat map screenshot for a specific showtime."""
+    from io import BytesIO
+
+    from cinepyle.theaters.models import TheaterDatabase
+    from cinepyle.theaters.schedule import fetch_schedules_for_theaters
+
+    region = params.get("region", "")
+    time_str = params.get("time", "")
+    date_str = params.get("date", "")
+    movie_filter = params.get("movie", "")
+    theater_query = params.get("theater", "")
+
+    target_date = _resolve_date(date_str)
+    min_time = _parse_time_filter(time_str)
+
+    # Find theaters
+    db = TheaterDatabase.load()
+    try:
+        matched = _find_theaters_for_showtime(db, region, theater_query)
+    finally:
+        db.close()
+
+    if not matched:
+        await update.message.reply_text(
+            "극장을 찾을 수 없습니다. 극장 이름이나 지역을 알려줘!\n"
+            "(예: CGV용산 인터스텔라 7시 좌석 보여줘)"
+        )
+        return
+
+    matched = matched[:5]  # limit for performance
+
+    # Fetch schedules
+    theaters_input = [
+        (t.chain, t.theater_code, t.name, json.loads(t.meta or "{}"))
+        for t in matched
+    ]
+    schedules = fetch_schedules_for_theaters(theaters_input, target_date)
+
+    # Resolve movie filter
+    matched_titles: set[str] | None = None
+    if movie_filter:
+        all_titles = set()
+        for sched in schedules:
+            for s in sched.screenings:
+                all_titles.add(s.movie_name)
+        if all_titles:
+            matched_titles = _match_movie_title(movie_filter, all_titles)
+
+    # Find best matching screening
+    best_screening = None
+    best_schedule = None
+    for sched in schedules:
+        for s in sched.screenings:
+            if matched_titles is not None and s.movie_name not in matched_titles:
+                continue
+            if min_time and s.start_time:
+                if s.start_time.replace(":", "") < min_time:
+                    continue
+            if best_screening is None:
+                best_screening = s
+                best_schedule = sched
+            elif min_time and s.start_time and best_screening.start_time:
+                # Prefer closest time match
+                if abs(int(s.start_time.replace(":", "")) - int(min_time)) < abs(
+                    int(best_screening.start_time.replace(":", "")) - int(min_time)
+                ):
+                    best_screening = s
+                    best_schedule = sched
+
+    if not best_screening or not best_schedule:
+        await update.message.reply_text(
+            "해당 조건에 맞는 상영을 찾을 수 없습니다.\n"
+            "극장, 영화, 시간을 다시 확인해주세요."
+        )
+        return
+
+    # Loading message
+    await update.message.reply_text(
+        f"🔍 {best_schedule.theater_name} - {best_screening.movie_name} "
+        f"{best_screening.start_time} 좌석 배치도를 가져오는 중... (10-20초 소요)"
+    )
+
+    # Capture seat map
+    try:
+        from cinepyle.browser.seat_map import capture_seat_map
+
+        meta = json.loads(
+            next(
+                (t.meta for t in matched if t.theater_code == best_schedule.theater_code),
+                "{}",
+            )
+            or "{}"
+        )
+
+        seat_result = await capture_seat_map(
+            chain=best_schedule.chain,
+            theater_code=best_schedule.theater_code,
+            theater_name=best_schedule.theater_name,
+            movie_name=best_screening.movie_name,
+            start_time=best_screening.start_time,
+            screen_id=best_screening.screen_id,
+            screen_name=best_screening.screen_name,
+            date_str=best_schedule.date,
+            remaining_seats=best_screening.remaining_seats,
+            meta=meta,
+            schedule_id=best_screening.schedule_id,
+        )
+    except ImportError:
+        await update.message.reply_text(
+            "좌석 배치도 기능을 사용하려면 Playwright를 설치해야 합니다.\n"
+            "`playwright install chromium`"
+        )
+        return
+    except Exception:
+        logger.exception("Seat map capture failed")
+        seat_result = None
+
+    # Send photo or fallback to text
+    if seat_result and seat_result.success and seat_result.screenshot:
+        caption = (
+            f"🎬 {best_screening.movie_name}\n"
+            f"🏢 {best_schedule.theater_name} {best_screening.screen_name}\n"
+            f"⏰ {best_screening.start_time} | 잔여 {best_screening.remaining_seats}석"
+        )
+        await update.message.reply_photo(
+            photo=BytesIO(seat_result.screenshot),
+            caption=caption,
+        )
+    else:
+        error_msg = seat_result.error if seat_result else "좌석 배치도를 가져올 수 없습니다"
+        await update.message.reply_text(
+            f"⚠️ {error_msg}\n\n"
+            f"📊 텍스트 정보:\n"
+            f"🎬 {best_screening.movie_name}\n"
+            f"🏢 {best_schedule.theater_name} {best_screening.screen_name}\n"
+            f"⏰ {best_screening.start_time}\n"
+            f"💺 잔여 좌석: {best_screening.remaining_seats}석"
+        )
 
 
 # ---------------------------------------------------------------------------

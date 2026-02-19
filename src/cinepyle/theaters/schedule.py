@@ -32,6 +32,7 @@ class Screening:
     screen_name: str  # e.g. "1관", "IMAX관"
     screen_type: str  # "imax", "4dx", "normal", etc.
     screen_id: str
+    schedule_id: str = ""  # chain-specific schedule/sequence ID for seat map
 
 
 @dataclass
@@ -117,6 +118,8 @@ def fetch_lotte_schedule(
                 booked = int(entry.get("BookingSeatCount", 0) or 0)
                 remaining = total_seats - booked
 
+                schedule_id = str(entry.get("PlaySequence", ""))
+
                 result.screenings.append(
                     Screening(
                         movie_name=movie_name,
@@ -125,6 +128,7 @@ def fetch_lotte_schedule(
                         screen_name=screen_name,
                         screen_type=screen_type,
                         screen_id=screen_id,
+                        schedule_id=schedule_id,
                     )
                 )
 
@@ -198,6 +202,8 @@ def fetch_megabox_schedule(
             start_time = _normalize_time(entry.get("playStartTime", ""))
             remaining = int(entry.get("restSeatCnt", 0) or 0)
 
+            schedule_id = str(entry.get("playSchdlNo", ""))
+
             result.screenings.append(
                 Screening(
                     movie_name=movie_name,
@@ -206,6 +212,7 @@ def fetch_megabox_schedule(
                     screen_name=screen_name,
                     screen_type=screen_type,
                     screen_id=screen_id,
+                    schedule_id=schedule_id,
                 )
             )
     except Exception:
@@ -284,6 +291,8 @@ def fetch_cgv_schedule(
             if not remaining:
                 remaining = int(item.get("stcnt", 0) or 0)
 
+            schedule_id = str(item.get("scnSseq", "") or item.get("sesnNo", ""))
+
             result.screenings.append(
                 Screening(
                     movie_name=movie_name,
@@ -292,6 +301,7 @@ def fetch_cgv_schedule(
                     screen_name=screen_name,
                     screen_type=screen_type,
                     screen_id=scns_no,
+                    schedule_id=schedule_id,
                 )
             )
     except Exception:
