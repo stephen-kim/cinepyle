@@ -414,6 +414,10 @@ def sync_lotte() -> list[Theater]:
             address=address,
             latitude=lat,
             longitude=lon,
+            meta=json.dumps({
+                "division_code": division_code,
+                "sort_sequence": sort_seq,
+            }),
             screens=screens,
         ))
 
@@ -586,7 +590,7 @@ def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
     # Only theaters with screens and from supported chains
     supported_chains = {"cgv", "lotte", "megabox"}
     theaters_input = [
-        (t.chain, t.theater_code, t.name)
+        (t.chain, t.theater_code, t.name, json.loads(t.meta or "{}"))
         for t in db.theaters
         if t.screens and t.chain in supported_chains
     ]

@@ -135,6 +135,7 @@ class Theater(Base):
     address: Mapped[str] = mapped_column(Text, default="")
     latitude: Mapped[float] = mapped_column(Float, default=0.0)
     longitude: Mapped[float] = mapped_column(Float, default=0.0)
+    meta: Mapped[str] = mapped_column(Text, default="{}")
 
     screens: Mapped[list[Screen]] = relationship(
         back_populates="theater",
@@ -443,7 +444,8 @@ class TheaterDatabase:
             # Read all theaters from seed
             seed_theaters = seed_conn.execute(
                 "SELECT chain, theater_code, name, region, address, "
-                "latitude, longitude FROM theaters"
+                "latitude, longitude, "
+                "COALESCE(meta, '{}') AS meta FROM theaters"
             ).fetchall()
             seed_screens = seed_conn.execute(
                 "SELECT chain, theater_code, screen_id, name, "
@@ -482,6 +484,7 @@ class TheaterDatabase:
                 address=row["address"] or "",
                 latitude=float(row["latitude"] or 0),
                 longitude=float(row["longitude"] or 0),
+                meta=row["meta"] or "{}",
             )
             key = (row["chain"], row["theater_code"])
             for s in screen_map.get(key, []):

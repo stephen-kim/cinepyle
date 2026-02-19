@@ -4,6 +4,7 @@ All text messages are routed through LLM intent classification.
 Only /start is kept as a slash command (Telegram platform convention).
 """
 
+import json
 import logging
 from datetime import datetime
 
@@ -779,8 +780,11 @@ async def _do_showtime(update: Update, params: dict) -> None:
             f"🔍 {len(matched)}개 극장 상영시간 조회 중..."
         )
 
-    # Fetch schedules
-    theaters_input = [(t.chain, t.theater_code, t.name) for t in matched]
+    # Fetch schedules (include Lotte meta for correct composite ID)
+    theaters_input = [
+        (t.chain, t.theater_code, t.name, json.loads(t.meta or "{}"))
+        for t in matched
+    ]
     schedules = fetch_schedules_for_theaters(theaters_input, target_date)
 
     # Load preferences
@@ -820,6 +824,9 @@ async def _do_showtime(update: Update, params: dict) -> None:
         theater_header = f"\n🏢 {sched.theater_name}{theater_marker}"
 
         if sched.error and not sched.screenings:
+            # Skip error-only theaters in nationwide search (too noisy)
+            if is_nationwide:
+                continue
             parts.append(f"{theater_header}\n  ⚠️ {sched.error}")
             continue
 

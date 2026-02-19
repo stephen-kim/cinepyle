@@ -55,6 +55,7 @@ def fetch_lotte_schedule(
     theater_code: str,
     theater_name: str = "",
     target_date: date | None = None,
+    meta: dict | None = None,
 ) -> TheaterSchedule:
     """Fetch Lotte Cinema schedule with screen info."""
     from cinepyle.theaters.sync import LOTTE_TICKETING_URL, _lotte_api
@@ -69,8 +70,14 @@ def fetch_lotte_schedule(
         date=date_str,
     )
 
-    # Try common composite ID patterns
-    composite_ids = [f"1|1|{theater_code}", f"1|2|{theater_code}"]
+    # Build composite ID from stored meta (division_code|sort_sequence|cinema_id)
+    # Fall back to common patterns if meta is unavailable
+    if meta and meta.get("division_code") and meta.get("sort_sequence"):
+        composite_ids = [
+            f"{meta['division_code']}|{meta['sort_sequence']}|{theater_code}"
+        ]
+    else:
+        composite_ids = [f"1|1|{theater_code}", f"1|2|{theater_code}"]
 
     for composite_id in composite_ids:
         try:
@@ -306,18 +313,26 @@ _CHAIN_FETCHERS = {
 
 
 def fetch_schedules_for_theaters(
-    theaters: list[tuple[str, str, str]],  # [(chain, theater_code, name), ...]
+    theaters: list[tuple],  # [(chain, theater_code, name[, meta]), ...]
     target_date: date | None = None,
 ) -> list[TheaterSchedule]:
-    """Fetch schedules for multiple theaters across chains (parallel)."""
+    """Fetch schedules for multiple theaters across chains (parallel).
+
+    Each tuple is ``(chain, theater_code, name)`` or optionally
+    ``(chain, theater_code, name, meta_dict)`` where *meta_dict*
+    carries chain-specific metadata (e.g. Lotte composite ID parts).
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def _fetch_one(args):
-        chain, theater_code, name = args
+        chain, theater_code, name = args[0], args[1], args[2]
+        meta = args[3] if len(args) > 3 else None
         fetcher = _CHAIN_FETCHERS.get(chain)
         if not fetcher:
             return None
         try:
+            if chain == "lotte" and meta:
+                return fetcher(theater_code, name, target_date, meta=meta)
             return fetcher(theater_code, name, target_date)
         except Exception:
             logger.debug("Schedule fetch failed for %s:%s", chain, theater_code)
