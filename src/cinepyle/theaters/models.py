@@ -364,7 +364,8 @@ class TheaterDatabase:
         return db
 
     def _merge_from_seed_if_newer(self) -> None:
-        """Merge theater data from seed DB if its sync timestamp is newer.
+        """Merge theater data from seed DB if its sync timestamp is newer,
+        or if the local DB is missing region data that the seed has.
 
         This runs on every startup. If the Docker image ships a newer seed
         (via ``data/seed/theaters.db``), the theater/screen rows are replaced
@@ -377,13 +378,28 @@ class TheaterDatabase:
         seed_sync = self._read_seed_sync_at()
         if not seed_sync:
             return
-        if local_sync >= seed_sync:
-            return  # local is same age or newer
 
-        logger.info(
-            "Seed DB is newer (seed=%s, local=%s) — merging theater data",
-            seed_sync[:19], local_sync[:19] if local_sync else "none",
-        )
+        # Check if local DB is missing region data that seed has
+        local_has_regions = self._session.scalar(
+            select(Theater.chain).where(Theater.region != "").limit(1)
+        ) is not None
+        seed_has_regions = self._seed_has_regions()
+
+        needs_merge = False
+        if local_sync < seed_sync:
+            needs_merge = True
+            logger.info(
+                "Seed DB is newer (seed=%s, local=%s) — merging theater data",
+                seed_sync[:19], local_sync[:19] if local_sync else "none",
+            )
+        elif not local_has_regions and seed_has_regions:
+            needs_merge = True
+            logger.info(
+                "Local DB missing region data but seed has it — merging",
+            )
+
+        if not needs_merge:
+            return
 
         import sqlite3
 
@@ -456,6 +472,21 @@ class TheaterDatabase:
             return row[0] if row else ""
         except Exception:
             return ""
+
+    @staticmethod
+    def _seed_has_regions() -> bool:
+        """Check if the seed database has any theaters with region data."""
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(str(SEED_PATH))
+            row = conn.execute(
+                "SELECT 1 FROM theaters WHERE region != '' LIMIT 1"
+            ).fetchone()
+            conn.close()
+            return row is not None
+        except Exception:
+            return False
 
     def _migrate_from_json(self) -> None:
         """One-time migration from theaters.json to SQLite."""
