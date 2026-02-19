@@ -43,7 +43,7 @@ class ClassificationResult:
 TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "showtime",
-        "description": "상영시간 조회. 사용자가 특정 지역, 시간, 날짜, 영화, 극장의 상영시간을 알고 싶을 때. 시간/지역/극장 언급이 있으면 book이 아니라 이것.",
+        "description": "상영시간 조회. 사용자가 특정 지역, 시간, 날짜, 영화, 극장의 상영시간을 알고 싶을 때. 시간/지역/극장 언급이 있으면 book이 아니라 이것. 영화+IMAX/4DX/돌비 등 특수관 조회도 이것. 영화+언제까지/상영기간도 이것.",
         "parameters": {
             "reply": {"type": "string", "description": "친근한 한국어 안내 메시지 (반말, 이모지 포함)"},
             "region": {"type": "string", "description": "지역명 (강남, 분당, 송도, 부산 등). 반드시 추출할 것. 없으면 빈 문자열"},
@@ -51,6 +51,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "date": {"type": "string", "description": "날짜 (원문 그대로: '내일', '모레', '2월 21일' 등). '내일', '오늘' 등 반드시 추출할 것. 없으면 빈 문자열"},
             "movie": {"type": "string", "description": "영화 제목만. 없으면 빈 문자열"},
             "theater": {"type": "string", "description": "구체적 극장명 (CGV용산 등). 없으면 빈 문자열"},
+            "screen_type": {"type": "string", "description": "특수상영관 타입 (IMAX, 4DX, 돌비, 돌비시네마, 돌비아트모스, 스크린X, 슈퍼4D 등). 없으면 빈 문자열"},
         },
         "required": ["reply"],
     },
@@ -74,7 +75,7 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "theater_info",
-        "description": "특정 극장의 상세 정보 (상영관 수, IMAX 여부, 좌석수 등).",
+        "description": "특정 극장의 상세 정보 (상영관 수, IMAX 여부, 좌석수 등). 주의: 영화 제목 + IMAX/4DX는 showtime을 사용할 것! theater_info는 극장 자체 정보만.",
         "parameters": {
             "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
             "query": {"type": "string", "description": "극장명 검색어"},
@@ -187,6 +188,8 @@ TOOL_SYSTEM_PROMPT = """\
 - "좌석 보여줘" / "자리 보여줘" / "좌석 배치도" → seat_map 도구
 - "부산에서 영화 보려는데" / "내일 4시반 부산역 도착인데 영화 추천" → showtime (지역+시간이 있으면 상영시간 조회!)
 - "추천해줘" / "뭐 볼만해" / "볼만한 영화" + 지역/시간 → showtime (추천=상영시간 조회)
+- "휴민트 IMAX로 볼 수 있어?" / "휴민트 4DX 상영관 있어?" → showtime (screen_type 파라미터에 IMAX/4DX)
+- "휴민트 언제까지 해?" / "아직 상영해?" → showtime (상영 여부/기간 확인도 상영시간 조회)
 
 ## 의도 판별 우선순위 (중요!)
 - "뭐해" / "뭐해?" / "뭐하니" 단독 (다른 단어 없이) → 절대로 showtime이 아님! → chat (인사/잡담)
@@ -196,6 +199,8 @@ TOOL_SYSTEM_PROMPT = """\
 - 단순 "추천해줘" (지역/시간 없음) → new_movies 또는 ranking
 - "영화 보고싶다" / "영화나 볼까" + 지역/시간 없음 → new_movies
 - "애들 데리고" / "아이랑 볼만한" / "데이트 영화" → showtime
+- 영화 제목 + "IMAX" / "4DX" / "돌비" / "스크린X" → showtime (screen_type 파라미터 채우기). theater_info가 아님!
+- 영화 제목 + "언제까지 해?" / "아직 해?" / "상영 기간" → showtime. chat이 아님!
 - "지난주에 뭐 봤더라" / "봤던 영화" → booking_history
 - "자리 어디 남았어" / "어디 남았어" / "빈자리" / "자리 있어?" → seat_map
 - "지금 위치에서 가까운" / "내 위치에서" / "현재 위치 근처" → nearby (region은 빈 문자열!)
@@ -461,8 +466,9 @@ _DIGEST_KEYWORDS = ["뉴스", "소식", "다이제스트", "기사"]
 _THEATER_LIST_KEYWORDS = ["극장 목록", "극장 리스트", "영화관 목록", "영화관 리스트"]
 _BOOKING_HISTORY_KEYWORDS = ["예매 내역", "예매내역", "예매 기록", "관람 기록", "예매 조회", "예매 확인", "봤던 영화", "관람기록", "예매기록"]
 _BOOK_KEYWORDS = ["예매", "예약", "티켓", "표 사", "표 끊", "booking", "book"]
-_SHOWTIME_KEYWORDS = ["상영시간", "시간표", "몇시", "뭐해", "뭐하", "상영 중"]
+_SHOWTIME_KEYWORDS = ["상영시간", "시간표", "몇시", "뭐해", "뭐하", "상영 중", "언제까지", "아직 상영", "상영 기간", "아직 해"]
 _SHOWTIME_TIME_SIGNALS = ["시에", "시 ", "오전", "오후", "저녁", "아침", "밤"]
+_SCREEN_TYPE_KEYWORDS = ["imax", "아이맥스", "4dx", "돌비", "돌비시네마", "돌비아트모스", "스크린x", "screenx", "슈퍼4d"]
 _MOVIE_INFO_KEYWORDS = ["누가 나와", "출연", "감독", "러닝타임", "줄거리", "장르", "영화 정보", "누가 나오"]
 _PREFERENCE_KEYWORDS = ["선호 극장", "선호극장", "자주 가는", "즐겨찾기", "선호 상영관"]
 
@@ -569,6 +575,20 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
                 params={"region": "", "theater": user_message, "movie": "", "time": "", "date": ""},
             )
 
+    # Screen type (IMAX/4DX/돌비 etc.) → showtime with screen_type param
+    has_screen_type = any(kw in msg for kw in _SCREEN_TYPE_KEYWORDS)
+    if has_screen_type:
+        screen_type = ""
+        for kw in _SCREEN_TYPE_KEYWORDS:
+            if kw in msg:
+                screen_type = kw.upper() if kw in ("imax", "4dx", "screenx") else kw
+                break
+        return ClassificationResult(
+            intent=Intent.SHOWTIME,
+            reply="상영시간을 조회할게요!",
+            params={"region": "", "time": "", "date": "", "movie": "", "theater": user_message, "screen_type": screen_type},
+        )
+
     # Showtime
     has_showtime_kw = any(kw in msg for kw in _SHOWTIME_KEYWORDS)
     has_time_signal = any(kw in msg for kw in _SHOWTIME_TIME_SIGNALS)
@@ -584,7 +604,7 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
             params={"region": "", "time": "", "date": "", "movie": "", "theater": user_message},
         )
 
-    # Theater info
+    # Theater info (but NOT if screen type keywords matched — those go to showtime above)
     for kw in _THEATER_INFO_KEYWORDS:
         if kw in msg:
             return ClassificationResult(

@@ -772,6 +772,7 @@ async def _do_showtime(update: Update, params: dict) -> None:
     date_str = params.get("date", "")
     movie_filter = params.get("movie", "")
     theater_query = params.get("theater", "")
+    screen_type_filter = params.get("screen_type", "")
 
     # Resolve date and time
     target_date = _resolve_date(date_str)
@@ -892,9 +893,17 @@ async def _do_showtime(update: Update, params: dict) -> None:
 
     # Build output
     date_display = target_date.strftime("%Y-%m-%d")
+    screen_label = ""
+    if screen_type_filter:
+        st = _LABEL_TO_SCREEN_TYPE.get(screen_type_filter.lower(), "")
+        screen_label = _SCREEN_TYPE_LABEL.get(st, screen_type_filter.upper())
     header = f"🎬 상영시간 ({date_display})"
-    if region:
+    if region and screen_label:
+        header = f"🎬 {region} {screen_label} 상영시간 ({date_display})"
+    elif region:
         header = f"🎬 {region} 상영시간 ({date_display})"
+    elif screen_label:
+        header = f"🎬 {screen_label} 상영시간 ({date_display})"
 
     parts = [header]
 
@@ -926,6 +935,14 @@ async def _do_showtime(update: Update, params: dict) -> None:
             screenings = [
                 s for s in screenings if s.movie_name in matched_titles
             ]
+
+        # Filter by screen type (IMAX, 4DX, etc.)
+        if screen_type_filter:
+            st = _LABEL_TO_SCREEN_TYPE.get(screen_type_filter.lower(), "")
+            if st:
+                screenings = [
+                    s for s in screenings if s.screen_type == st
+                ]
 
         if not screenings:
             continue
