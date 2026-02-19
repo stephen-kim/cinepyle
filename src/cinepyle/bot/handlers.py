@@ -672,10 +672,13 @@ async def _do_showtime(update: Update, params: dict) -> None:
                 if not s.start_time or s.start_time.replace(":", "") >= min_time
             ]
 
-        # Filter by movie
+        # Filter by movie (ignore spaces for flexible matching)
         if movie_filter:
-            mf = movie_filter.lower()
-            screenings = [s for s in screenings if mf in s.movie_name.lower()]
+            mf = movie_filter.replace(" ", "").lower()
+            screenings = [
+                s for s in screenings
+                if mf in s.movie_name.replace(" ", "").lower()
+            ]
 
         if not screenings:
             continue
@@ -719,6 +722,19 @@ async def _do_showtime(update: Update, params: dict) -> None:
             lines.append(f"  ⚠️ {sched.error}")
 
         parts.append("\n".join(lines))
+
+    # Check if we found any actual showings
+    if len(parts) <= 1:
+        # Only header, no theater results
+        no_result = header
+        if movie_filter:
+            no_result += f"\n\n'{movie_filter}' 상영 정보를 찾을 수 없습니다."
+        else:
+            no_result += "\n\n상영 정보를 찾을 수 없습니다."
+        if min_time:
+            no_result += f"\n(시간 필터: {min_time[:2]}:{min_time[2:]} 이후)"
+        await update.message.reply_text(no_result)
+        return
 
     if pref_keys or pref_types:
         parts.append("\n⭐ = 선호 극장/상영관")
