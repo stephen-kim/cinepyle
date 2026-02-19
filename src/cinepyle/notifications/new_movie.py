@@ -7,7 +7,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from cinepyle.config import KOBIS_API_KEY, WATCHA_EMAIL, WATCHA_PASSWORD
-from cinepyle.scrapers.boxoffice import fetch_daily_box_office
 from cinepyle.scrapers.kofic import fetch_recent_releases
 from cinepyle.scrapers.watcha import WatchaClient
 
@@ -17,8 +16,10 @@ _known_movie_codes: set[str] = set()
 _watcha_client: WatchaClient | None = None
 
 
-def _get_watcha_client() -> WatchaClient:
+def _get_watcha_client() -> WatchaClient | None:
     global _watcha_client
+    if not WATCHA_EMAIL or not WATCHA_PASSWORD:
+        return None
     if _watcha_client is None:
         _watcha_client = WatchaClient(WATCHA_EMAIL, WATCHA_PASSWORD)
     return _watcha_client
@@ -28,18 +29,22 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job callback: detect new movies and notify with Watcha ratings."""
     chat_id = context.job.data
 
-    # Gather movie codes from both box office and recent releases
+    # Gather movie codes from box office (with Watcha fallback)
+    from cinepyle.scrapers.boxoffice import fetch_box_office_with_fallback
+
     try:
-        box_office = fetch_daily_box_office(KOBIS_API_KEY)
+        box_office = await fetch_box_office_with_fallback(KOBIS_API_KEY)
     except Exception:
         logger.exception("Failed to fetch box office data")
         box_office = []
 
-    try:
-        recent = fetch_recent_releases(KOBIS_API_KEY)
-    except Exception:
-        logger.exception("Failed to fetch recent releases")
-        recent = []
+    # Recent releases only available with KOFIC key
+    recent: list[dict] = []
+    if KOBIS_API_KEY:
+        try:
+            recent = fetch_recent_releases(KOBIS_API_KEY)
+        except Exception:
+            logger.exception("Failed to fetch recent releases")
 
     # Merge all movies by code
     all_movies: dict[str, dict] = {}
@@ -79,12 +84,14 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         info = all_movies[code]
         name = info["name"]
 
-        # Try to get Watcha expected rating
-        try:
-            rating = watcha.get_expected_rating(name)
-        except Exception:
-            logger.exception("Watcha rating lookup failed for %s", name)
-            rating = None
+        # Try to get Watcha expected rating (skip if not configured)
+        rating = None
+        if watcha is not None:
+            try:
+                rating = watcha.get_expected_rating(name)
+            except Exception:
+                logger.exception("Watcha rating lookup failed for %s", name)
+                rating = None
 
         # Build text
         text = f"🆕 새 영화: {name}"

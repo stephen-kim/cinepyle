@@ -1,8 +1,11 @@
 """Korean Film Council (KOBIS) daily box office API client."""
 
 import json
+import logging
 from datetime import datetime, timedelta
 from urllib.request import urlopen
+
+logger = logging.getLogger(__name__)
 
 KOBIS_BASE_URL = (
     "http://www.kobis.or.kr/kobisopenapi/webservice/rest/"
@@ -30,3 +33,30 @@ def fetch_daily_box_office(api_key: str) -> list[dict]:
         }
         for entry in raw["boxOfficeResult"]["dailyBoxOfficeList"]
     ]
+
+
+async def fetch_box_office_with_fallback(api_key: str) -> list[dict]:
+    """Fetch box office rankings with Watcha Pedia fallback.
+
+    If api_key is provided, tries KOFIC API first.
+    If api_key is empty or KOFIC call fails, falls back to
+    Playwright-based Watcha Pedia scraping.
+
+    Returns a list of dicts with keys: rank, name, code.
+    """
+    if api_key:
+        try:
+            return fetch_daily_box_office(api_key)
+        except Exception:
+            logger.exception("KOFIC box office failed, trying Watcha fallback")
+
+    try:
+        from cinepyle.browser.watcha_boxoffice import fetch_watcha_box_office
+
+        return await fetch_watcha_box_office()
+    except ImportError:
+        logger.error("Playwright not available for Watcha box office fallback")
+        return []
+    except Exception:
+        logger.exception("Watcha box office fallback also failed")
+        return []

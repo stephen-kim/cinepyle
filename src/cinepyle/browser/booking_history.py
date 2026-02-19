@@ -230,7 +230,7 @@ async def fetch_lotte_booking_history() -> BookingHistoryResult:
 
     result = BookingHistoryResult(chain="lotte")
     if not LOTTE_ID:
-        result.error = "롯데시네마 로그인 정보가 설정되지 않았습니다 (LOTTE_ID 환경변수)"
+        result.error = "롯데시네마 로그인 정보가 설정되지 않았습니다 (LOTTECINEMA_ID 환경변수)"
         return result
 
     mgr = BrowserManager.instance()
@@ -611,7 +611,7 @@ async def fetch_booking_history(
                 chain="all",
                 error=(
                     "로그인 정보가 설정되지 않았습니다.\n"
-                    ".env에 CGV_ID, LOTTE_ID, MEGABOX_ID 등을 설정해주세요."
+                    ".env에 CGV_ID, LOTTECINEMA_ID, MEGABOX_ID 등을 설정해주세요."
                 ),
             )
         ]

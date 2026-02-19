@@ -12,7 +12,6 @@ from fastapi.templating import Jinja2Templates
 from cinepyle.digest.settings import DigestSettings
 from cinepyle.notifications.screen_settings import ScreenAlertSettings
 from cinepyle.theaters.models import TheaterDatabase
-from cinepyle.theaters.sync_settings import SyncSettings
 
 logger = logging.getLogger(__name__)
 
@@ -126,18 +125,18 @@ def _base_context(request: Request, active_tab: str = "digest", **extra):
         "LLM_API_KEY": bool(os.environ.get("LLM_API_KEY")),
         "OPENAI_API_KEY": bool(os.environ.get("OPENAI_API_KEY")),
         "ANTHROPIC_API_KEY": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        "GOOGLE_API_KEY": bool(os.environ.get("GOOGLE_API_KEY")),
+        "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
         "TELEGRAM_BOT_TOKEN": bool(os.environ.get("TELEGRAM_BOT_TOKEN")),
         "TELEGRAM_CHAT_ID": bool(os.environ.get("TELEGRAM_CHAT_ID")),
         "KOFIC_API_KEY": bool(os.environ.get("KOFIC_API_KEY")),
-        "NAVER_MAP_CLIENT_ID": bool(os.environ.get("NAVER_MAP_CLIENT_ID")),
-        "NAVER_MAP_CLIENT_SECRET": bool(os.environ.get("NAVER_MAP_CLIENT_SECRET")),
+        "NAVER_MAPS_CLIENT_ID": bool(os.environ.get("NAVER_MAPS_CLIENT_ID")),
+        "NAVER_MAPS_CLIENT_SECRET": bool(os.environ.get("NAVER_MAPS_CLIENT_SECRET")),
         "WATCHA_EMAIL": bool(os.environ.get("WATCHA_EMAIL")),
         "WATCHA_PASSWORD": bool(os.environ.get("WATCHA_PASSWORD")),
         "CGV_ID": bool(os.environ.get("CGV_ID")),
         "CGV_PASSWORD": bool(os.environ.get("CGV_PASSWORD")),
-        "LOTTE_ID": bool(os.environ.get("LOTTE_ID")),
-        "LOTTE_PASSWORD": bool(os.environ.get("LOTTE_PASSWORD")),
+        "LOTTECINEMA_ID": bool(os.environ.get("LOTTECINEMA_ID")),
+        "LOTTECINEMA_PASSWORD": bool(os.environ.get("LOTTECINEMA_PASSWORD")),
         "MEGABOX_ID": bool(os.environ.get("MEGABOX_ID")),
         "MEGABOX_PASSWORD": bool(os.environ.get("MEGABOX_PASSWORD")),
     }
@@ -146,7 +145,6 @@ def _base_context(request: Request, active_tab: str = "digest", **extra):
         "request": request,
         "settings": DigestSettings.load(),
         "screen_settings": ScreenAlertSettings.load(),
-        "sync_settings": SyncSettings.load(),
         "chains": chains,
         "regions": regions,
         "last_sync_at": last_sync_at,
@@ -155,8 +153,6 @@ def _base_context(request: Request, active_tab: str = "digest", **extra):
         "saved": False,
         "test_sent": False,
         "screen_saved": False,
-        "sync_saved": False,
-        "sync_triggered": False,
         **extra,
     }
 
@@ -263,55 +259,6 @@ async def save_screen_settings(request: Request):
 
 
 # -----------------------------------------------------------------------
-# Sync settings
-# -----------------------------------------------------------------------
-
-
-@app.get("/sync", response_class=HTMLResponse)
-async def sync_page(request: Request):
-    ctx = _base_context(request, active_tab="sync")
-    return templates.TemplateResponse("index.html", ctx)
-
-
-@app.post("/sync/save", response_class=HTMLResponse)
-async def save_sync_settings(
-    request: Request,
-    sync_enabled: bool = Form(False),
-    sync_interval_days: int = Form(1),
-):
-    sync_settings = SyncSettings(
-        sync_enabled=sync_enabled,
-        sync_interval_days=max(1, min(sync_interval_days, 30)),
-    )
-    sync_settings.save()
-    logger.info(
-        "Sync settings saved: enabled=%s, interval=%d days",
-        sync_settings.sync_enabled,
-        sync_settings.sync_interval_days,
-    )
-
-    ctx = _base_context(request, active_tab="sync", sync_saved=True)
-    ctx["sync_settings"] = sync_settings
-    return templates.TemplateResponse("index.html", ctx)
-
-
-@app.post("/sync/trigger", response_class=HTMLResponse)
-async def trigger_sync(request: Request):
-    if _job_queue is not None:
-        from cinepyle.theaters.sync_job import theater_sync_job
-
-        _job_queue.run_once(
-            theater_sync_job, when=0, data=_chat_id, name="manual_sync",
-        )
-        logger.info("Manual theater sync triggered")
-    else:
-        logger.warning("Cannot trigger sync: bot not connected")
-
-    ctx = _base_context(request, active_tab="sync", sync_triggered=True)
-    return templates.TemplateResponse("index.html", ctx)
-
-
-# -----------------------------------------------------------------------
 # Credentials settings (settings overlay)
 # -----------------------------------------------------------------------
 
@@ -331,7 +278,7 @@ async def save_credentials(request: Request):
     _PROVIDER_ENV = {
         "openai": "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
-        "google": "GOOGLE_API_KEY",
+        "google": "GEMINI_API_KEY",
     }
     api_keys = dict(current.llm_api_keys)
     for provider in ("openai", "anthropic", "google"):

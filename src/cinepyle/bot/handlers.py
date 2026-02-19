@@ -25,7 +25,6 @@ from cinepyle.bot.nlp import (
 )
 from cinepyle.config import KOBIS_API_KEY, LLM_API_KEY, LLM_MODEL, LLM_PROVIDER
 from cinepyle.digest.settings import DigestSettings
-from cinepyle.scrapers.boxoffice import fetch_daily_box_office
 from cinepyle.theaters.finder import find_nearest_theaters
 
 logger = logging.getLogger(__name__)
@@ -125,12 +124,21 @@ async def message_handler(
 
 async def _do_ranking(update: Update) -> None:
     """Fetch and send box office rankings."""
+    from cinepyle.scrapers.boxoffice import fetch_box_office_with_fallback
+
     try:
-        movies = fetch_daily_box_office(KOBIS_API_KEY)
+        movies = await fetch_box_office_with_fallback(KOBIS_API_KEY)
     except Exception:
         logger.exception("Failed to fetch box office")
         await update.message.reply_text(
             "박스오피스 정보를 가져오는데 실패했습니다. 잠시 후 다시 시도해주세요."
+        )
+        return
+
+    if not movies:
+        await update.message.reply_text(
+            "박스오피스 데이터를 가져올 수 없습니다.\n"
+            "KOFIC_API_KEY를 설정하거나 잠시 후 다시 시도해주세요."
         )
         return
 
@@ -278,6 +286,13 @@ async def _do_theater_list(
 async def _do_new_movies(update: Update) -> None:
     """Show recent movie releases."""
     from cinepyle.scrapers.kofic import fetch_recent_releases
+
+    if not KOBIS_API_KEY:
+        await update.message.reply_text(
+            "최근 개봉작 조회는 KOFIC API 키가 필요합니다.\n"
+            "KOFIC_API_KEY 환경변수를 설정해주세요."
+        )
+        return
 
     try:
         releases = fetch_recent_releases(KOBIS_API_KEY, days_back=7)
@@ -713,6 +728,13 @@ async def _do_movie_info(update: Update, params: dict) -> None:
     if not movie_name:
         await update.message.reply_text(
             "어떤 영화 정보를 찾으시나요? 영화 제목을 말씀해주세요."
+        )
+        return
+
+    if not KOBIS_API_KEY:
+        await update.message.reply_text(
+            "영화 상세 정보 조회는 KOFIC API 키가 필요합니다.\n"
+            "KOFIC_API_KEY 환경변수를 설정해주세요."
         )
         return
 

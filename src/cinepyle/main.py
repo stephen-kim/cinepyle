@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from datetime import datetime, time as dt_time, timezone
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -18,9 +18,6 @@ from cinepyle.notifications.imax import check_imax_job
 from cinepyle.notifications.new_movie import check_new_movies_job
 from cinepyle.notifications.screen_alert import check_screen_alerts_job
 from cinepyle.notifications.screen_settings import ScreenAlertSettings
-from cinepyle.theaters.models import TheaterDatabase
-from cinepyle.theaters.sync_job import theater_sync_job
-from cinepyle.theaters.sync_settings import SyncSettings
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -37,36 +34,6 @@ def _run_dashboard() -> None:
         port=DASHBOARD_PORT,
         log_level="warning",
     )
-
-
-def _seconds_until_sync(sync_settings: SyncSettings) -> int | None:
-    """Calculate seconds until next sync is needed.
-
-    Returns 30 (startup delay) if sync is overdue, or seconds until
-    the interval expires.  Returns None if sync is disabled.
-    """
-    if not sync_settings.sync_enabled:
-        return None
-
-    interval_secs = sync_settings.sync_interval_days * 86400
-
-    db = TheaterDatabase.load()
-    last = db.last_sync_at
-    db.close()
-
-    if not last:
-        # Never synced — run soon after startup
-        return 30
-
-    try:
-        last_dt = datetime.fromisoformat(last)
-        elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
-        remaining = interval_secs - elapsed
-        if remaining <= 0:
-            return 30  # overdue
-        return int(remaining)
-    except (ValueError, TypeError):
-        return 30
 
 
 def main() -> None:
@@ -130,26 +97,6 @@ def main() -> None:
             settings.schedule_hour,
             settings.schedule_minute,
         )
-
-    # Theater & screen sync: configurable interval (default 1 day)
-    sync_settings = SyncSettings.load()
-    first_sync = _seconds_until_sync(sync_settings)
-    if first_sync is not None:
-        interval_secs = sync_settings.sync_interval_days * 86400
-        job_queue.run_repeating(
-            theater_sync_job,
-            interval=interval_secs,
-            first=first_sync,
-            data=TELEGRAM_CHAT_ID,
-            name="theater_sync",
-        )
-        logger.info(
-            "Theater sync scheduled every %d day(s), first in %d sec",
-            sync_settings.sync_interval_days,
-            first_sync,
-        )
-    else:
-        logger.info("Theater sync disabled")
 
     # Screen alert check
     screen_settings = ScreenAlertSettings.load()

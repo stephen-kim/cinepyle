@@ -196,7 +196,7 @@ class TheaterDatabase:
     """Theater database with SQLAlchemy ORM + SQLite.
 
     The public API is kept compatible with callers (sync.py, app.py,
-    sync_job.py, screen_alert.py, main.py).
+    screen_alert.py).
     """
 
     def __init__(self, session: Session) -> None:
