@@ -24,7 +24,7 @@ from cinepyle.theaters.models import TheaterDatabase
 
 logger = logging.getLogger(__name__)
 
-SEEN_PATH = Path("data/screen_alerts_seen.json")
+SEEN_PATH = Path("config/screen_alerts_seen.json")
 
 _seen_keys: set[str] = set()
 _initialized: bool = False

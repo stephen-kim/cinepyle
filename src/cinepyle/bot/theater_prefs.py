@@ -7,7 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-PREFS_PATH = Path("data/theater_preferences.json")
+PREFS_PATH = Path("config/theater_preferences.json")
 
 
 @dataclass

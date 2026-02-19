@@ -7,7 +7,7 @@ services:
     ports:
       - "${DASHBOARD_PORT:-3847}:${DASHBOARD_PORT:-3847}"
     volumes:
-      - cinepyle-data:/app/data
+      - cinepyle-config:/app/config
     labels:
       - "com.centurylinklabs.watchtower.scope=cinepyle"
     restart: unless-stopped
@@ -25,4 +25,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  cinepyle-data:
+  cinepyle-config:

@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path("data/theaters.db")
-SEED_PATH = Path("data/seed/theaters.db")
+SEED_PATH = Path("seed/theaters.db")
 
 
 def main() -> None:

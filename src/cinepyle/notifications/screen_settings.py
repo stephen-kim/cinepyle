@@ -7,7 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_PATH = Path("data/screen_alert_settings.json")
+SETTINGS_PATH = Path("config/screen_alert_settings.json")
 
 
 @dataclass

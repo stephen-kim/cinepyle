@@ -18,9 +18,11 @@ uv.lock
 .vscode/
 .idea/
 
-# Data (runtime — persisted via Docker volume)
-data/*
-!data/seed/
+# Data (runtime — theater DB lives inside container, rebuilt from seed)
+data/
+
+# Config (user settings — persisted via Docker volume)
+config/
 
 # Claude
 .claude/

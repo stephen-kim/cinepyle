@@ -13,7 +13,7 @@ from playwright.async_api import Browser, BrowserContext, Playwright, async_play
 
 logger = logging.getLogger(__name__)
 
-BROWSER_DATA_DIR = Path("data/browser")
+BROWSER_DATA_DIR = Path("config/browser")
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
