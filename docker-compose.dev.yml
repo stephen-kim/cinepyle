@@ -1,6 +1,6 @@
 services:
   cinepyle:
-    image: ghcr.io/stephen-kim/cinepyle:latest
+    build: .
     pull_policy: always
     env_file:
       - .env

@@ -19,4 +19,4 @@ MEGABOX_ID: str = os.environ.get("MEGABOX_ID", "")
 MEGABOX_PASSWORD: str = os.environ.get("MEGABOX_PASSWORD", "")
 
 # Dashboard (optional)
-DASHBOARD_PORT: int = int(os.environ.get("DASHBOARD_PORT", "8080"))
+DASHBOARD_PORT: int = int(os.environ.get("DASHBOARD_PORT", "3847"))
