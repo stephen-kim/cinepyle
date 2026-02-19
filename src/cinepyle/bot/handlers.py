@@ -70,6 +70,14 @@ async def message_handler(
                 kw_result = classify_intent_fallback(user_text)
                 if kw_result.intent != Intent.CHAT:
                     result = kw_result
+            # LLM often returns nearby without chain/region params;
+            # enrich from keyword fallback which extracts them reliably
+            elif result.intent == Intent.NEARBY:
+                kw_result = classify_intent_fallback(user_text)
+                if kw_result.intent == Intent.NEARBY and kw_result.params:
+                    for k, v in kw_result.params.items():
+                        if v and not result.params.get(k):
+                            result.params[k] = v
         except Exception:
             logger.exception("LLM classification failed, using keyword fallback")
             result = classify_intent_fallback(user_text)

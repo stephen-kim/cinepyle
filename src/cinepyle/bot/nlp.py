@@ -457,6 +457,40 @@ _SEAT_MAP_KEYWORDS = ["좌석 보여", "좌석 배치", "좌석도", "좌석 현
 _THEATER_INFO_KEYWORDS = ["상영관", "스크린", "imax", "아이맥스", "4dx", "돌비"]
 
 
+def _extract_region_for_nearby(text: str, trigger_kw: str, chain: str) -> str:
+    """Extract a region/place name from a nearby query.
+
+    Strips the trigger keyword (근처/주변/가까운), chain names, and common
+    noise words, then returns whatever meaningful location token remains.
+    Examples:
+        "신림동 근처 영화관"  → "신림동"
+        "강남 근처 CGV"     → "강남"
+        "근처 메가박스 찾아줘" → "" (no region)
+    """
+    import re
+
+    t = text
+    # Remove trigger keyword
+    t = t.replace(trigger_kw, " ")
+    # Remove chain names
+    for name in ("CGV", "cgv", "씨지브이", "메가박스", "megabox",
+                  "롯데시네마", "롯데", "lotte", "씨네q", "cineq"):
+        t = re.sub(re.escape(name), " ", t, flags=re.IGNORECASE)
+    # Remove common noise words
+    for noise in ("영화관", "극장", "시네마", "찾아줘", "찾아", "알려줘",
+                   "어디야", "어디", "있어", "있나", "있니", "있지",
+                   "뭐", "뭐있지", "좀", "서울", "내일", "오늘", "에서",
+                   "보여줘", "보여", "영화", "첫", "뭐해", "뭐하",
+                   "야", "요", "the", "a"):
+        t = t.replace(noise, " ")
+    # Clean up whitespace
+    t = re.sub(r"\s+", " ", t).strip()
+    # Return the remaining meaningful token(s) if short enough to be a place
+    if t and len(t) <= 10:
+        return t
+    return ""
+
+
 def classify_intent_fallback(user_message: str) -> ClassificationResult:
     """Keyword-based intent classification when LLM is unavailable.
 
@@ -464,7 +498,8 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
     For full param extraction (showtime region/time, movie titles, etc.),
     an LLM provider must be configured.
     """
-    msg = user_message.lower().strip()
+    text = user_message.strip()
+    msg = text.lower()
 
     # Preference
     has_preference = any(kw in msg for kw in _PREFERENCE_KEYWORDS)
@@ -592,10 +627,15 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
                 if c in msg.lower():
                     chain = "롯데시네마"
                     break
+            # Try to extract region — strip noise words and chain names
+            region = _extract_region_for_nearby(text, kw, chain)
+            reply = "근처 영화관을 찾아드릴게요! 위치를 전송해주세요."
+            if region:
+                reply = f"{region} 근처 영화관을 찾아볼게요!"
             return ClassificationResult(
                 intent=Intent.NEARBY,
-                reply="근처 영화관을 찾아드릴게요! 위치를 전송해주세요.",
-                params={"chain": chain},
+                reply=reply,
+                params={"chain": chain, "region": region},
             )
 
     for kw in _NEW_MOVIES_KEYWORDS:

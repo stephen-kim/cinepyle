@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from cinepyle.digest.settings import DigestSettings
@@ -19,6 +20,11 @@ app = FastAPI(title="Cinepyle Dashboard")
 
 _templates_dir = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+
+# Serve static assets (icon, favicon, etc.)
+_asset_dir = Path(__file__).resolve().parent.parent.parent.parent / "asset"
+if _asset_dir.is_dir():
+    app.mount("/asset", StaticFiles(directory=str(_asset_dir)), name="asset")
 
 # Reference to the bot's job_queue, set by main.py at startup
 _job_queue = None
