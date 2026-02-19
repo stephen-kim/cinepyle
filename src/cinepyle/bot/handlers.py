@@ -687,14 +687,29 @@ async def _do_showtime(update: Update, params: dict) -> None:
     db = TheaterDatabase.load()
     try:
         matched = _find_theaters_for_showtime(db, region, theater_query)
+
+        # No region/theater specified → use preferred theaters
+        if not matched and not region and not theater_query:
+            prefs = TheaterPreferences.load()
+            if prefs.preferred_theaters:
+                pref_set = set(prefs.preferred_theaters)
+                for t in db.theaters:
+                    if t.key in pref_set:
+                        matched.append(t)
     finally:
         db.close()
 
     if not matched:
-        await update.message.reply_text(
-            f'"{region or theater_query}" 지역/극장을 찾을 수 없습니다.\n'
-            "극장 이름이나 지역을 다시 확인해주세요."
-        )
+        if not region and not theater_query:
+            await update.message.reply_text(
+                "어느 극장에서 보려고 해? 지역이나 극장 이름을 알려줘!\n"
+                "(예: 강남, CGV용산, 목동 롯데시네마)"
+            )
+        else:
+            await update.message.reply_text(
+                f'"{region or theater_query}" 지역/극장을 찾을 수 없습니다.\n'
+                "극장 이름이나 지역을 다시 확인해주세요."
+            )
         return
 
     # Limit to 10 theaters to avoid rate limits
