@@ -17,6 +17,6 @@ COPY data/seed/ data/seed/
 # Install the project
 RUN uv sync --no-dev
 
-EXPOSE 8080
+EXPOSE ${DASHBOARD_PORT:-3847}
 
 CMD ["uv", "run", "cinepyle"]
