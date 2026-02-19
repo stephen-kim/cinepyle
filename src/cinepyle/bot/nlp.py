@@ -200,6 +200,52 @@ _CHAIN_KEYWORDS = {
 _THEATER_INFO_KEYWORDS = ["상영관", "스크린", "imax", "아이맥스", "4dx", "돌비", "좌석"]
 
 
+def _extract_movie_name(text: str) -> str:
+    """Extract movie title from a movie_info query.
+
+    Examples:
+        "영화 파묘에 누가 나와?" → "파묘"
+        "파묘 감독 누구야?" → "파묘"
+        "영화 휴민트 출연진 알려줘" → "휴민트"
+    """
+    import re
+
+    msg = text.strip()
+
+    # Strip common noise words/phrases
+    noise = (
+        _MOVIE_INFO_KEYWORDS
+        + ["영화", "알려줘", "알려주세요", "보여줘", "뭐야", "뭐에요", "누구야", "누구에요", "?", "!"]
+    )
+
+    # Try "영화 <title>" pattern — capture everything up to a noise keyword
+    noise_boundary = "|".join(re.escape(kw) for kw in _MOVIE_INFO_KEYWORDS)
+    m = re.search(rf"영화\s+(.+?)(?:\s*(?:{noise_boundary}))", msg)
+    if not m:
+        # Try without noise boundary (e.g. "영화 파묘에")
+        m = re.search(r"영화\s+(\S+)", msg)
+    if m:
+        title = m.group(1).strip()
+        # Strip trailing particles
+        title = re.sub(r"[에서의은는이가을를도요]+$", "", title)
+        if title:
+            return title
+
+    # Otherwise, remove noise words and particles, return what's left
+    cleaned = msg
+    for n in sorted(noise, key=len, reverse=True):
+        cleaned = cleaned.replace(n, " ")
+    # Remove common particles at word boundaries
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Strip trailing/leading particles from each word
+    words = []
+    for w in cleaned.split():
+        w = re.sub(r"[에서의은는이가을를도요]+$", "", w)
+        if w:
+            words.append(w)
+    return " ".join(words) if words else msg
+
+
 def _parse_showtime_params(text: str) -> dict:
     """Extract region, time, date, movie, theater from a showtime query."""
     import re
@@ -309,10 +355,11 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
     # Movie info (check before showtime — specific patterns)
     for kw in _MOVIE_INFO_KEYWORDS:
         if kw in msg:
+            movie = _extract_movie_name(user_message)
             return ClassificationResult(
                 intent=Intent.MOVIE_INFO,
                 reply="영화 정보를 검색할게요!",
-                params={"movie": user_message},
+                params={"movie": movie},
             )
 
     # Showtime (check before booking — has time/location signals)
