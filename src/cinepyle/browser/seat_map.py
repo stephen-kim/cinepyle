@@ -356,13 +356,194 @@ async def _capture_lotte(
     meta: dict | None = None,
     schedule_id: str = "",
 ) -> SeatMapResult:
-    """Capture Lotte Cinema seat map."""
-    # TODO: implement Lotte Cinema seat map navigation
-    return SeatMapResult(
-        success=False,
-        screenshot=b"",
-        error="롯데시네마 좌석 배치도는 아직 지원되지 않습니다",
-    )
+    """Capture Lotte Cinema seat map via the ticketing page minimap popup.
+
+    Lotte Cinema ticketing flow (as of Feb 2026):
+
+    1. Navigate to ``/NLCHS/Ticketing`` (jQuery-based, no login required for
+       Step 1).
+    2. Select cinema from ``.basicCinemaScroll li a``.
+    3. Wait for schedule load, then select movie from ``.movieSelect li a``.
+    4. Select showtime from ``a[role="button"]`` matching ``dd.time strong``.
+    5. A popup (``#layerReserveStep01``) appears with a **minimap** showing
+       seat availability (``sel p0`` = available, ``sel p0 completed`` = sold).
+    6. Dismiss any inner info popup ("알려드립니다") if present.
+    7. Screenshot the popup element.
+
+    No login is required — the minimap is visible in Step 1.
+    """
+    page = await _new_page("lotte")
+
+    try:
+        await page.goto(
+            "https://www.lottecinema.co.kr/NLCHS/Ticketing",
+            wait_until="networkidle",
+            timeout=30_000,
+        )
+        await page.wait_for_timeout(3000)
+
+        # --- Select cinema ---
+        # Strip chain prefix for matching ("건대입구 롯데시네마" → "건대입구")
+        short_name = (
+            theater_name.replace("롯데시네마", "")
+            .replace("롯데시네마", "")
+            .strip()
+        )
+        cinema_link = page.locator(
+            f".basicCinemaScroll li a:has-text('{short_name}')"
+        ).first
+        try:
+            await cinema_link.click(timeout=5000)
+            logger.info("Lotte: clicked cinema '%s'", short_name)
+        except Exception:
+            # Fallback: try partial text match across all cinema links
+            clicked = await page.evaluate(
+                """(name) => {
+                    const links = document.querySelectorAll('.basicCinemaScroll li a');
+                    for (const a of links) {
+                        if (a.textContent.trim().includes(name)) {
+                            a.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                short_name,
+            )
+            if not clicked:
+                return SeatMapResult(
+                    success=False,
+                    screenshot=b"",
+                    error=f"롯데시네마 '{short_name}' 극장을 찾을 수 없습니다",
+                )
+            logger.info("Lotte: clicked cinema '%s' (JS fallback)", short_name)
+
+        await page.wait_for_timeout(4000)
+
+        # --- Select movie ---
+        movie_link = page.locator(
+            f".movieSelect li a:has-text('{movie_name}')"
+        ).first
+        try:
+            await movie_link.click(timeout=5000)
+            logger.info("Lotte: clicked movie '%s'", movie_name)
+        except Exception:
+            # Fallback: JS text match
+            clicked = await page.evaluate(
+                """(name) => {
+                    const links = document.querySelectorAll('.movieSelect li a, .movieScroll li a');
+                    for (const a of links) {
+                        if (a.textContent.includes(name)) {
+                            a.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                movie_name,
+            )
+            if not clicked:
+                return SeatMapResult(
+                    success=False,
+                    screenshot=b"",
+                    error=f"롯데시네마에서 '{movie_name}' 영화를 찾을 수 없습니다",
+                )
+            logger.info("Lotte: clicked movie '%s' (JS fallback)", movie_name)
+
+        await page.wait_for_timeout(4000)
+
+        # --- Select showtime ---
+        # Showtime links: <a role="button"> containing <dd class="time"><strong>HH:MM</strong></dd>
+        # and optionally <dd class="hall">screen_name</dd>
+        clicked_time = await page.evaluate(
+            """([targetTime, targetHall]) => {
+                const links = document.querySelectorAll('.timeScroll a[role="button"]');
+                // First pass: match time + hall
+                for (const a of links) {
+                    const timeEl = a.querySelector('dd.time strong');
+                    const hallEl = a.querySelector('dd.hall');
+                    if (!timeEl) continue;
+                    const time = timeEl.textContent.trim();
+                    const hall = hallEl ? hallEl.textContent.trim() : '';
+                    if (time === targetTime && (!targetHall || hall.includes(targetHall))) {
+                        a.click();
+                        return true;
+                    }
+                }
+                // Second pass: match time only
+                for (const a of links) {
+                    const timeEl = a.querySelector('dd.time strong');
+                    if (timeEl && timeEl.textContent.trim() === targetTime) {
+                        a.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            [start_time, screen_name],
+        )
+
+        if not clicked_time:
+            return SeatMapResult(
+                success=False,
+                screenshot=b"",
+                error=f"롯데시네마 상영 시간 {start_time}을 찾을 수 없습니다",
+            )
+
+        logger.info("Lotte: clicked showtime %s", start_time)
+        await page.wait_for_timeout(3000)
+
+        # --- Dismiss "알려드립니다" info popup if present ---
+        # This overlay (#layerPopupMulti) sits *above* #layerReserveStep01
+        # and appears for certain screens (e.g. 샤롯데).
+        for _ in range(3):
+            try:
+                confirm = page.locator(
+                    "#layerPopupMulti button.btnCloseLayerMulti:visible, "
+                    "#layerPopupMulti button:has-text('확인'):visible"
+                ).first
+                if await confirm.is_visible(timeout=800):
+                    await confirm.click()
+                    logger.debug("Lotte: dismissed layerPopupMulti overlay")
+                    await page.wait_for_timeout(800)
+                    continue
+            except Exception:
+                pass
+            break
+
+        # --- Screenshot the popup ---
+        popup = page.locator("#layerReserveStep01")
+        try:
+            await popup.wait_for(state="visible", timeout=5000)
+            screenshot = await popup.screenshot(type="png")
+            logger.info(
+                "Lotte: captured minimap popup (%d bytes)", len(screenshot)
+            )
+        except Exception:
+            # Fallback: full viewport
+            logger.info("Lotte: popup not found, taking full screenshot")
+            screenshot = await page.screenshot(
+                type="png",
+                clip={"x": 0, "y": 0, "width": 1280, "height": 900},
+            )
+
+        return SeatMapResult(success=True, screenshot=screenshot)
+
+    except PwTimeout:
+        return SeatMapResult(
+            success=False,
+            screenshot=b"",
+            error="롯데시네마 좌석 페이지 로딩 시간 초과",
+        )
+    except Exception as e:
+        logger.exception("Lotte seat map failed")
+        return SeatMapResult(
+            success=False,
+            screenshot=b"",
+            error=f"롯데시네마 좌석 배치도 로딩 실패: {e}",
+        )
+    finally:
+        await page.close()
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +563,155 @@ async def _capture_cgv(
     meta: dict | None = None,
     schedule_id: str = "",
 ) -> SeatMapResult:
-    """Capture CGV seat map."""
-    # TODO: implement CGV seat map navigation
-    return SeatMapResult(
-        success=False,
-        screenshot=b"",
-        error="CGV 좌석 배치도는 아직 지원되지 않습니다",
-    )
+    """Capture CGV seat map via the booking page.
+
+    CGV requires login to view the seat selection page, and the login page
+    frequently shows CAPTCHA.  When login succeeds (session cookies from a
+    previous manual login may still be valid), we navigate through the SPA
+    booking flow: select theater → click showtime → screenshot seat page.
+
+    If login fails due to CAPTCHA, we fall back to a screenshot of the
+    schedule page which shows remaining seat counts per showtime.
+    """
+    page = await _new_page("cgv")
+
+    try:
+        # --- Login ---
+        from cinepyle.browser.booking_history import _ensure_cgv_login
+
+        logged_in = await _ensure_cgv_login(page)
+
+        # --- Navigate to booking page ---
+        await page.goto(
+            "https://cgv.co.kr/cnm/movieBook/cinema",
+            wait_until="networkidle",
+            timeout=30_000,
+        )
+        await page.wait_for_timeout(3000)
+
+        # --- Select theater ---
+        short_name = (
+            theater_name
+            .replace("CGV", "")
+            .replace("cgv", "")
+            .strip()
+        )
+        try:
+            theater_btn = page.get_by_text(short_name, exact=True).first
+            await theater_btn.click(timeout=5000)
+            clicked_theater = True
+        except Exception:
+            # Fallback: partial text match via JS
+            clicked_theater = await page.evaluate(
+                """(name) => {
+                    const btns = document.querySelectorAll('button');
+                    for (const b of btns) {
+                        if (b.textContent.trim().includes(name) && b.offsetWidth > 0) {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                short_name,
+            )
+        if not clicked_theater:
+            return SeatMapResult(
+                success=False,
+                screenshot=b"",
+                error=f"CGV '{short_name}' 극장을 찾을 수 없습니다",
+            )
+
+        logger.info("CGV: clicked theater '%s'", short_name)
+        await page.wait_for_timeout(4000)
+
+        if not logged_in:
+            # Not logged in — screenshot the schedule page as fallback
+            logger.info("CGV: no login, capturing schedule page as fallback")
+            screenshot = await page.screenshot(
+                type="png",
+                clip={"x": 0, "y": 0, "width": 1280, "height": 900},
+            )
+            return SeatMapResult(
+                success=True,
+                screenshot=screenshot,
+                error="CGV 로그인 불가 (CAPTCHA) — 잔여좌석 현황 페이지입니다",
+            )
+
+        # --- Click showtime ---
+        clicked_time = await page.evaluate(
+            """(targetTime) => {
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    const text = btn.textContent.trim();
+                    if (text.includes(targetTime) && !btn.disabled
+                        && !text.includes('예매종료') && btn.offsetWidth > 0) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            start_time,
+        )
+
+        if not clicked_time:
+            # Fallback: screenshot the schedule page
+            logger.info("CGV: showtime %s not found, capturing schedule page", start_time)
+            screenshot = await page.screenshot(
+                type="png",
+                clip={"x": 0, "y": 0, "width": 1280, "height": 900},
+            )
+            return SeatMapResult(
+                success=True,
+                screenshot=screenshot,
+                error=f"CGV {start_time} 시간을 찾을 수 없어 상영 정보 페이지입니다",
+            )
+
+        logger.info("CGV: clicked showtime %s", start_time)
+
+        # --- Wait for seat page ---
+        await page.wait_for_timeout(5000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+        except Exception:
+            pass
+
+        # Dismiss any login modals that might still appear
+        await page.evaluate(
+            """() => {
+                const modals = document.querySelectorAll('[class*="modal"]');
+                modals.forEach(m => {
+                    if (m.offsetWidth > 0 && m.textContent.includes('로그인')) {
+                        const close = m.querySelector('button, [class*="close"]');
+                        if (close) close.click();
+                    }
+                });
+            }"""
+        )
+        await page.wait_for_timeout(2000)
+
+        # --- Screenshot ---
+        screenshot = await page.screenshot(
+            type="png",
+            clip={"x": 0, "y": 0, "width": 1280, "height": 900},
+        )
+        logger.info("CGV: captured seat map screenshot (%d bytes)", len(screenshot))
+
+        return SeatMapResult(success=True, screenshot=screenshot)
+
+    except PwTimeout:
+        return SeatMapResult(
+            success=False,
+            screenshot=b"",
+            error="CGV 좌석 페이지 로딩 시간 초과",
+        )
+    except Exception as e:
+        logger.exception("CGV seat map failed")
+        return SeatMapResult(
+            success=False,
+            screenshot=b"",
+            error=f"CGV 좌석 배치도 로딩 실패: {e}",
+        )
+    finally:
+        await page.close()

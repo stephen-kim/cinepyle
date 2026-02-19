@@ -4,6 +4,7 @@ All text messages are routed through LLM intent classification.
 Only /start is kept as a slash command (Telegram platform convention).
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -1368,12 +1369,15 @@ async def location_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handle location messages -- find nearby theaters."""
+    logger.info("location_handler called")
     location = update.message.location
     if location is None:
+        logger.warning("location_handler: location is None")
         return
 
     latitude = location.latitude
     longitude = location.longitude
+    logger.info("Location received: lat=%s, lon=%s", latitude, longitude)
 
     remove_keyboard = ReplyKeyboardRemove()
     await update.message.reply_text(
@@ -1382,7 +1386,11 @@ async def location_handler(
     )
 
     try:
-        theaters = find_nearest_theaters(latitude, longitude, n=5)
+        # find_nearest_theaters makes synchronous HTTP calls (Lotte/MegaBox APIs)
+        # which can block the event loop.  Run in a thread to stay non-blocking.
+        theaters = await asyncio.to_thread(
+            find_nearest_theaters, latitude, longitude, 5
+        )
     except Exception:
         logger.exception("Failed to find nearby theaters")
         await update.message.reply_text(
