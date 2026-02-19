@@ -2,7 +2,7 @@
 name = "cinepyle"
 version = "0.1.0"
 description = "Korean cinema Telegram bot - box office rankings, new movie alerts, IMAX notifications, and nearby theater finder"
-requires-python = ">=3.14"
+requires-python = "~=3.14.0"
 dependencies = [
     "python-telegram-bot[job-queue]>=21.0",
     "python-dotenv>=1.1.0",
@@ -17,7 +17,15 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "jinja2>=3.1",
     "sqlalchemy>=2.0",
+    "playwright>=1.49",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.1",
+    "ty>=0.0.17",
+]
+
 
 [project.scripts]
 cinepyle = "cinepyle.main:main"
@@ -28,3 +36,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cinepyle"]
+
