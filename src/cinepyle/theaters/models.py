@@ -131,6 +131,7 @@ class Theater(Base):
     chain: Mapped[str] = mapped_column(String, primary_key=True)
     theater_code: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    region: Mapped[str] = mapped_column(String, default="")
     address: Mapped[str] = mapped_column(Text, default="")
     latitude: Mapped[float] = mapped_column(Float, default=0.0)
     longitude: Mapped[float] = mapped_column(Float, default=0.0)
@@ -216,6 +217,25 @@ class TheaterDatabase:
         stmt = (
             select(Theater)
             .where(Theater.chain == chain)
+            .order_by(Theater.name)
+        )
+        return list(self._session.scalars(stmt))
+
+    def get_regions(self) -> list[str]:
+        """Return all distinct regions, ordered."""
+        stmt = (
+            select(Theater.region)
+            .where(Theater.region != "")
+            .distinct()
+            .order_by(Theater.region)
+        )
+        return list(self._session.scalars(stmt))
+
+    def get_by_region(self, region: str) -> list[Theater]:
+        """Return all theaters in a given region, sorted by name."""
+        stmt = (
+            select(Theater)
+            .where(Theater.region == region)
             .order_by(Theater.name)
         )
         return list(self._session.scalars(stmt))
@@ -306,6 +326,21 @@ class TheaterDatabase:
             cursor.close()
 
         Base.metadata.create_all(engine)
+
+        # Migrate: add 'region' column if missing (SQLAlchemy create_all
+        # does not alter existing tables)
+        with engine.connect() as conn:
+            try:
+                conn.execute(select(Theater.region).limit(1))
+            except Exception:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "ALTER TABLE theaters ADD COLUMN region VARCHAR DEFAULT ''"
+                    )
+                )
+                conn.commit()
+                logger.info("Migrated theaters table: added region column")
+
         session = sessionmaker(bind=engine)()
 
         db = cls(session)

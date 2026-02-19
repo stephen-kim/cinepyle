@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cinepyle Dashboard</title>
+  <title>cinePyle Dashboard</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -15,7 +15,29 @@
       max-width: 700px;
       margin: 0 auto;
     }
-    h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #fff; }
+    .header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+    .header h1 { font-size: 1.5rem; color: #fff; }
+    .header .settings-btn {
+      background: none; border: none; color: #666; cursor: pointer;
+      font-size: 1.2rem; padding: 0.2rem; line-height: 1; transition: color 0.2s;
+    }
+    .header .settings-btn:hover { color: #fff; }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 0.6rem; }
+    .gh-link {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      color: #888; text-decoration: none; font-size: 0.8rem; transition: color 0.2s;
+    }
+    .gh-link:hover { color: #fff; }
+    .gh-link svg { width: 18px; height: 18px; fill: currentColor; }
+    .gh-star {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: #222; border: 1px solid #444; border-radius: 5px;
+      padding: 0.2rem 0.6rem; color: #ccc; text-decoration: none;
+      font-size: 0.75rem; transition: all 0.2s;
+    }
+    .gh-star:hover { background: #333; color: #fff; border-color: #666; }
+    .gh-star svg { width: 14px; height: 14px; fill: currentColor; }
+
     h2 {
       font-size: 1.1rem; margin: 1.5rem 0 0.75rem; color: #ccc;
       border-bottom: 1px solid #333; padding-bottom: 0.4rem;
@@ -51,35 +73,139 @@
       flex: 1; padding: 0.7rem; border: 1px solid #333;
       background: #1a1a1a; color: #888; cursor: pointer;
       font-size: 0.9rem; border-bottom: 2px solid transparent;
+      border-radius: 0;
     }
-    .tab { border-radius: 0; }
     .tab:first-child { border-radius: 6px 0 0 6px; }
     .tab:last-child { border-radius: 0 6px 6px 0; }
     .tab.active { background: #222; color: #fff; border-bottom-color: #2563eb; }
 
-    /* Screen alert styles */
-    details.chain-group { margin: 0.5rem 0; }
-    details.chain-group > summary {
-      cursor: pointer; font-weight: 600; font-size: 1rem;
-      color: #ccc; padding: 0.4rem 0;
+    /* Env badge */
+    .env-field { opacity: 0.2; pointer-events: none; }
+    .env-badge {
+      display: inline-block; font-size: 0.7rem; background: #1e3a5f; color: #93c5fd;
+      padding: 0.1rem 0.5rem; border-radius: 3px; margin-left: 0.4rem;
+      vertical-align: middle;
     }
-    details.theater-group { margin: 0.3rem 0; padding-left: 1rem; }
-    details.theater-group > summary {
-      cursor: pointer; font-weight: 500; font-size: 0.9rem;
-      color: #aaa; padding: 0.2rem 0;
+
+    /* Settings panel (overlay) */
+    .settings-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      z-index: 100; justify-content: center; align-items: start; padding: 2rem 1rem;
+      overflow-y: auto;
     }
-    .theater-addr { font-size: 0.75rem; color: #666; margin-left: 0.5rem; }
-    .screen-label {
-      display: block; margin: 0.15rem 0; padding-left: 2rem; font-size: 0.85rem;
+    .settings-overlay.open { display: flex; }
+    .settings-panel {
+      background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
+      padding: 1.5rem; width: 100%; max-width: 600px;
     }
-    .screen-label.special { color: #93c5fd; }
-    .badge {
-      font-size: 0.65rem; background: #2563eb33; color: #93c5fd;
-      padding: 0.05rem 0.4rem; border-radius: 3px; margin-left: 0.3rem;
-      text-transform: uppercase;
+    .settings-panel h2:first-child { margin-top: 0; }
+    .settings-panel .close-btn {
+      float: right; background: none; border: none; color: #888;
+      font-size: 1.5rem; cursor: pointer; padding: 0; margin: 0; line-height: 1;
     }
-    .seats { font-size: 0.7rem; color: #666; margin-left: 0.3rem; }
-    .no-data { font-size: 0.85rem; color: #666; padding: 1rem 0; }
+    .settings-panel .close-btn:hover { color: #fff; }
+    .settings-group { margin-bottom: 1rem; }
+    .settings-group-header {
+      font-size: 0.9rem; font-weight: 600; color: #aaa; margin: 1rem 0 0.5rem;
+      border-bottom: 1px solid #222; padding-bottom: 0.3rem;
+    }
+
+    /* ===== Screen picker (region column view) ===== */
+    .screen-picker { margin-top: 0.5rem; }
+
+    /* Selected chips */
+    .selected-chips {
+      display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem;
+      min-height: 1.6rem;
+    }
+    .chip {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: #1e3a5f; color: #93c5fd; border-radius: 4px;
+      padding: 0.15rem 0.5rem; font-size: 0.75rem;
+    }
+    .chip .chain-tag {
+      font-size: 0.6rem; opacity: 0.6; margin-right: 0.1rem;
+    }
+    .chip .x {
+      cursor: pointer; font-size: 0.85rem; line-height: 1; opacity: 0.7;
+      margin-left: 0.1rem;
+    }
+    .chip .x:hover { opacity: 1; color: #fff; }
+    .no-selection { font-size: 0.8rem; color: #666; }
+
+    /* Search */
+    .screen-search {
+      width: 100%; padding: 0.5rem 0.7rem; background: #111;
+      border: 1px solid #333; border-radius: 6px; color: #e0e0e0;
+      font-size: 0.85rem; margin-bottom: 0.75rem;
+    }
+    .screen-search::placeholder { color: #555; }
+
+    /* Region columns */
+    .region-container {
+      display: flex; border: 1px solid #333; border-radius: 6px;
+      overflow: hidden; height: 350px;
+    }
+    .region-list {
+      width: 90px; min-width: 90px; background: #151515; border-right: 1px solid #333;
+      overflow-y: auto; flex-shrink: 0;
+    }
+    .region-item {
+      padding: 0.5rem 0.6rem; font-size: 0.8rem; color: #888;
+      cursor: pointer; border-bottom: 1px solid #1a1a1a;
+      transition: all 0.15s;
+    }
+    .region-item:hover { background: #1a1a1a; color: #ccc; }
+    .region-item.active { background: #222; color: #fff; border-left: 2px solid #2563eb; }
+    .region-item .count { font-size: 0.65rem; color: #555; margin-left: 0.2rem; }
+    .region-item.active .count { color: #888; }
+
+    /* Theater list (right side) */
+    .theater-list {
+      flex: 1; overflow-y: auto; padding: 0.4rem;
+    }
+    .theater-entry {
+      padding: 0.3rem 0.5rem; border-radius: 4px;
+      transition: background 0.1s;
+    }
+    .theater-entry:hover { background: #1a1a1a; }
+    .theater-entry.hidden { display: none; }
+    .theater-name-row {
+      display: flex; align-items: center; gap: 0.4rem;
+      font-size: 0.85rem; cursor: pointer;
+    }
+    .theater-name-row .chain-badge {
+      font-size: 0.6rem; padding: 0.05rem 0.35rem; border-radius: 3px;
+      font-weight: 600; flex-shrink: 0;
+    }
+    .chain-badge.cgv { background: #7b1818; color: #f99; }
+    .chain-badge.lotte { background: #6b2f00; color: #fca; }
+    .chain-badge.megabox { background: #1a3d6b; color: #9cf; }
+    .chain-badge.cineq { background: #3d1a6b; color: #c9f; }
+    .chain-badge.indie { background: #1a4a1a; color: #9f9; }
+    .theater-name-text { flex: 1; color: #ccc; }
+    .theater-name-row .expand-arrow {
+      font-size: 0.65rem; color: #555; transition: transform 0.2s;
+    }
+    .theater-name-row .expand-arrow.open { transform: rotate(90deg); }
+
+    /* Screens inside theater */
+    .theater-screens {
+      display: none; padding: 0.2rem 0 0.2rem 1.4rem;
+    }
+    .theater-screens.open { display: block; }
+    .screen-item {
+      display: flex; align-items: center; gap: 0.3rem;
+      font-size: 0.8rem; padding: 0.1rem 0; color: #aaa;
+    }
+    .screen-item.special { color: #93c5fd; }
+    .screen-item input[type="checkbox"] { margin: 0; }
+    .screen-badge {
+      font-size: 0.6rem; background: #2563eb33; color: #93c5fd;
+      padding: 0.02rem 0.35rem; border-radius: 3px; text-transform: uppercase;
+    }
+    .screen-seats { font-size: 0.65rem; color: #555; }
+    .no-screens { font-size: 0.75rem; color: #555; padding: 0.2rem 0; font-style: italic; }
 
     /* Sync info */
     .sync-info {
@@ -92,10 +218,118 @@
     .sync-stats .stat { text-align: center; }
     .sync-stats .stat .num { font-size: 1.3rem; font-weight: 600; color: #fff; }
     .sync-stats .stat .lbl { font-size: 0.75rem; color: #888; }
+
+    .no-data { font-size: 0.85rem; color: #666; padding: 1rem 0; }
+
+    /* Search highlight */
+    .search-match { background: #2563eb44; border-radius: 2px; }
   </style>
 </head>
 <body>
-  <h1>Cinepyle Dashboard</h1>
+  <!-- Header -->
+  <div class="header">
+    <h1>cinePyle Dashboard</h1>
+    <button type="button" class="settings-btn" onclick="toggleSettings()" title="Settings">&#9881;</button>
+    <div class="header-right">
+      <a href="https://github.com/stephen-kim/cinepyle" target="_blank" rel="noopener" class="gh-link" title="GitHub">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+      <a href="https://github.com/stephen-kim/cinepyle" target="_blank" rel="noopener" class="gh-star" title="Star on GitHub">
+        <svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>
+        Star
+      </a>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Settings Overlay -->
+  <!-- ============================================================ -->
+  <div class="settings-overlay" id="settings-overlay" onclick="if(event.target===this)toggleSettings()">
+    <div class="settings-panel">
+      <button type="button" class="close-btn" onclick="toggleSettings()">&times;</button>
+
+      <h2>API Keys &amp; Credentials</h2>
+
+      {% macro credential_field(label, name, env_key, type="password", placeholder="") %}
+      <label>
+        {{ label }}
+        {% if env_vars.get(env_key) %}
+          <span class="env-badge">env</span>
+        {% endif %}
+        <input type="{{ type }}" name="{{ name }}"
+          class="{% if env_vars.get(env_key) %}env-field{% endif %}"
+          placeholder="{% if env_vars.get(env_key) %}env{% else %}{{ placeholder or '입력하세요' }}{% endif %}"
+          autocomplete="off"
+          {% if env_vars.get(env_key) %}disabled{% endif %}>
+      </label>
+      {% endmacro %}
+
+      <form method="post" action="/settings/credentials">
+
+        <div class="settings-group-header">LLM</div>
+        <label>
+          LLM Provider
+          {% if env_vars.get("LLM_PROVIDER") %}
+            <span class="env-badge">env</span>
+          {% endif %}
+          <select name="llm_provider" {% if env_vars.get("LLM_PROVIDER") %}class="env-field" disabled{% endif %}>
+            <option value="openai" {{ "selected" if settings.llm_provider == "openai" }}>OpenAI</option>
+            <option value="anthropic" {{ "selected" if settings.llm_provider == "anthropic" }}>Anthropic</option>
+            <option value="google" {{ "selected" if settings.llm_provider == "google" }}>Google</option>
+          </select>
+        </label>
+        <label>
+          Model
+          {% if env_vars.get("LLM_MODEL") %}
+            <span class="env-badge">env</span>
+          {% endif %}
+          <input type="text" name="llm_model"
+            class="{% if env_vars.get('LLM_MODEL') %}env-field{% endif %}"
+            value="{{ settings.llm_model }}"
+            placeholder="{% if env_vars.get('LLM_MODEL') %}env{% else %}기본값 사용 (비워두면 자동){% endif %}"
+            {% if env_vars.get("LLM_MODEL") %}disabled{% endif %}>
+        </label>
+        <p class="hint">OpenAI: gpt-4o-mini, gpt-4o, gpt-4.5-preview &middot; Anthropic: claude-3-5-haiku-latest, claude-sonnet-4-20250514 &middot; Google: gemini-2.0-flash</p>
+        {{ credential_field("LLM API Key", "llm_api_key", "LLM_API_KEY", placeholder="설정됨" if settings.llm_api_key else "") }}
+
+        <div class="settings-group-header">Telegram</div>
+        {{ credential_field("Bot Token", "telegram_bot_token", "TELEGRAM_BOT_TOKEN") }}
+        {{ credential_field("Chat ID", "telegram_chat_id", "TELEGRAM_CHAT_ID", type="text") }}
+
+        <div class="settings-group-header">KOFIC (영진위)</div>
+        {{ credential_field("API Key", "kofic_api_key", "KOFIC_API_KEY") }}
+
+        <div class="settings-group-header">Naver Map</div>
+        {{ credential_field("Client ID", "naver_map_client_id", "NAVER_MAP_CLIENT_ID", type="text") }}
+        {{ credential_field("Client Secret", "naver_map_client_secret", "NAVER_MAP_CLIENT_SECRET") }}
+
+        <div class="settings-group-header">Watcha</div>
+        {{ credential_field("Email", "watcha_email", "WATCHA_EMAIL", type="text") }}
+        {{ credential_field("Password", "watcha_password", "WATCHA_PASSWORD") }}
+
+        <div class="settings-group-header">CGV</div>
+        {{ credential_field("ID", "cgv_id", "CGV_ID", type="text") }}
+        {{ credential_field("Password", "cgv_password", "CGV_PASSWORD") }}
+
+        <div class="settings-group-header">Lotte Cinema</div>
+        {{ credential_field("ID", "lotte_id", "LOTTE_ID", type="text") }}
+        {{ credential_field("Password", "lotte_password", "LOTTE_PASSWORD") }}
+
+        <div class="settings-group-header">MegaBox</div>
+        {{ credential_field("ID", "megabox_id", "MEGABOX_ID", type="text") }}
+        {{ credential_field("Password", "megabox_password", "MEGABOX_PASSWORD") }}
+
+        <p class="hint" style="margin-top: 1rem;">
+          <span class="env-badge">env</span> 표시된 항목은 환경변수(.env)로 설정됨. 변경하려면 .env 파일을 수정하세요.
+        </p>
+
+        <div class="actions">
+          <button type="submit" class="primary">저장</button>
+          <button type="button" class="secondary" onclick="toggleSettings()">닫기</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <!-- Tab Navigation -->
   <nav class="tabs">
@@ -156,29 +390,16 @@
         </label>
       </div>
 
-      <h2>AI 설정</h2>
-      <label>
-        LLM Provider
-        <select name="llm_provider">
-          <option value="openai" {{ "selected" if settings.llm_provider == "openai" }}>OpenAI (GPT-4o mini)</option>
-          <option value="anthropic" {{ "selected" if settings.llm_provider == "anthropic" }}>Anthropic (Claude 3.5 Haiku)</option>
-          <option value="google" {{ "selected" if settings.llm_provider == "google" }}>Google (Gemini Flash)</option>
-        </select>
-      </label>
-      <label>
-        API Key
-        <input type="password" name="llm_api_key"
-          placeholder="{{ '설정됨' if settings.llm_api_key else '입력하세요' }}"
-          autocomplete="off">
-      </label>
-      <p class="hint">선택한 LLM provider의 API key를 입력하세요. 비워두면 기존 키를 유지합니다.</p>
-
       <h2>선별 기준</h2>
       <label>
         취향 및 관심사
         <textarea name="preferences" placeholder="예: 한국 독립영화 위주로, 리뷰 선호, 인터뷰 좋아함">{{ settings.preferences }}</textarea>
       </label>
       <p class="hint">AI가 기사를 선별할 때 참고할 취향을 자유롭게 적어주세요.</p>
+
+      <!-- hidden fields to preserve LLM settings when saving digest form -->
+      <input type="hidden" name="llm_provider" value="{{ settings.llm_provider }}">
+      <input type="hidden" name="llm_api_key" value="">
 
       <div class="actions">
         <button type="submit" class="primary">저장</button>
@@ -199,7 +420,7 @@
     <div class="alert alert-success">상영관 알림 설정이 저장되었습니다.</div>
     {% endif %}
 
-    <form method="post" action="/screens/save">
+    <form method="post" action="/screens/save" id="screen-form">
       <h2>알림 설정</h2>
       <label>
         <input type="checkbox" name="screen_alerts_enabled" value="true"
@@ -217,53 +438,83 @@
 
       <h2>감시 상영관 선택</h2>
 
-      {% set chain_labels = {"cgv": "CGV", "lotte": "롯데시네마", "megabox": "메가박스", "cineq": "씨네Q", "indie": "독립영화관"} %}
+      <div class="screen-picker">
+        <!-- Selected chips -->
+        <div class="selected-chips" id="selected-chips">
+          <span class="no-selection" id="no-selection-msg">선택된 상영관이 없습니다</span>
+        </div>
 
-      {% for chain_key in ["cgv", "lotte", "megabox", "cineq", "indie"] %}
-        {% set chain_theaters = chains.get(chain_key, []) %}
-        {% if chain_theaters %}
-        <details class="chain-group">
-          <summary>{{ chain_labels[chain_key] }} ({{ chain_theaters|length }}개 극장)</summary>
+        <!-- Search -->
+        <input type="text" class="screen-search" id="screen-search"
+          placeholder="극장 또는 상영관 검색..." oninput="filterTheaters(this.value)">
 
-          {% for theater in chain_theaters %}
-            {% if theater.screens %}
-            <details class="theater-group">
-              <summary>
-                {{ theater.name }}
-                {% if theater.address %}
-                <span class="theater-addr">{{ theater.address[:30] }}{% if theater.address|length > 30 %}...{% endif %}</span>
-                {% endif %}
-              </summary>
-              {% for screen in theater.screens %}
-              <label class="screen-label {% if screen.is_special %}special{% endif %}">
-                <input type="checkbox" name="watched_screens"
-                  value="{{ theater.chain }}:{{ theater.theater_code }}:{{ screen.screen_id }}"
-                  {{ "checked" if screen_settings.is_watching(theater.chain ~ ':' ~ theater.theater_code ~ ':' ~ screen.screen_id) }}>
-                {{ screen.name }}
-                {% if screen.screen_type != "normal" %}
-                  <span class="badge">{{ screen.screen_type }}</span>
-                {% endif %}
-                {% if screen.seat_count > 0 %}
-                  <span class="seats">{{ screen.seat_count }}석</span>
-                {% endif %}
-              </label>
-              {% endfor %}
-            </details>
-            {% else %}
-            <div style="padding-left: 1rem;">
-              <span class="no-data">{{ theater.name }}</span>
+        <!-- Region column view -->
+        {% if regions %}
+        <div class="region-container">
+          <!-- Left: region list -->
+          <div class="region-list" id="region-list">
+            {% for region_name, theaters in regions.items() %}
+            <div class="region-item {% if loop.first %}active{% endif %}"
+              data-region="{{ region_name }}"
+              onclick="selectRegion(this, '{{ region_name }}')">
+              {{ region_name }}<span class="count">{{ theaters|length }}</span>
             </div>
-            {% endif %}
-          {% endfor %}
+            {% endfor %}
+          </div>
 
-        </details>
+          <!-- Right: theater list per region -->
+          <div class="theater-list" id="theater-list">
+            {% set first_region = regions.keys()|list|first %}
+            {% for region_name, theaters in regions.items() %}
+              {% for theater in theaters %}
+              <div class="theater-entry"
+                data-region="{{ region_name }}"
+                data-name="{{ theater.name|lower }}"
+                data-chain="{{ theater.chain }}"
+                style="{% if region_name != first_region %}display:none{% endif %}">
+                <div class="theater-name-row" onclick="toggleTheaterScreens(this)">
+                  <span class="chain-badge {{ theater.chain }}">{{ theater.chain|upper }}</span>
+                  <span class="theater-name-text">{{ theater.name }}</span>
+                  {% if theater.screens %}
+                  <span class="expand-arrow">&#9654;</span>
+                  {% endif %}
+                </div>
+                {% if theater.screens %}
+                <div class="theater-screens">
+                  {% for screen in theater.screens %}
+                  <label class="screen-item {% if screen.is_special %}special{% endif %}"
+                    data-screen-name="{{ screen.name|lower }}">
+                    <input type="checkbox" name="watched_screens"
+                      value="{{ theater.chain }}:{{ theater.theater_code }}:{{ screen.screen_id }}"
+                      data-theater-name="{{ theater.name }}"
+                      data-screen-name="{{ screen.name }}"
+                      data-chain="{{ theater.chain }}"
+                      {{ "checked" if screen_settings.is_watching(theater.chain ~ ':' ~ theater.theater_code ~ ':' ~ screen.screen_id) }}
+                      onchange="updateChips()">
+                    <span>{{ screen.name }}</span>
+                    {% if screen.screen_type != "normal" %}
+                      <span class="screen-badge">{{ screen.screen_type }}</span>
+                    {% endif %}
+                    {% if screen.seat_count > 0 %}
+                      <span class="screen-seats">{{ screen.seat_count }}석</span>
+                    {% endif %}
+                  </label>
+                  {% endfor %}
+                </div>
+                {% else %}
+                <div class="theater-screens">
+                  <div class="no-screens">상영관 정보 없음 (동기화 필요)</div>
+                </div>
+                {% endif %}
+              </div>
+              {% endfor %}
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <p class="no-data">극장 데이터가 없습니다. 극장 동기화 탭에서 동기화를 실행하세요.</p>
         {% endif %}
-      {% endfor %}
-
-      {% set total_theaters = (chains.get("cgv", [])|length) + (chains.get("lotte", [])|length) + (chains.get("megabox", [])|length) + (chains.get("cineq", [])|length) + (chains.get("indie", [])|length) %}
-      {% if total_theaters == 0 %}
-      <p class="no-data">극장 데이터가 없습니다. 극장 동기화 탭에서 동기화를 실행하세요.</p>
-      {% endif %}
+      </div>
 
       <div class="actions">
         <button type="submit" class="primary">저장</button>
@@ -356,6 +607,7 @@
   </div>
 
   <script>
+    // ==================== Tab switching ====================
     function switchTab(tab) {
       var tabs = ['digest', 'screens', 'sync'];
       tabs.forEach(function(t) {
@@ -365,6 +617,147 @@
         el.classList.toggle('active', tabs[i] === tab);
       });
     }
+
+    // ==================== Settings overlay ====================
+    function toggleSettings() {
+      document.getElementById('settings-overlay').classList.toggle('open');
+    }
+
+    // ==================== Region column view ====================
+    var currentRegion = '';
+
+    function selectRegion(el, region) {
+      // Update active state
+      document.querySelectorAll('.region-item').forEach(function(r) {
+        r.classList.remove('active');
+      });
+      el.classList.add('active');
+      currentRegion = region;
+
+      // Show/hide theaters
+      var searchVal = document.getElementById('screen-search').value.toLowerCase();
+      showTheatersForRegion(region, searchVal);
+    }
+
+    function showTheatersForRegion(region, search) {
+      document.querySelectorAll('.theater-entry').forEach(function(entry) {
+        var matchRegion = entry.dataset.region === region;
+        var matchSearch = true;
+        if (search) {
+          var name = entry.dataset.name || '';
+          // Also check screen names within
+          var screenNames = [];
+          entry.querySelectorAll('[data-screen-name]').forEach(function(s) {
+            screenNames.push(s.dataset.screenName);
+          });
+          var allText = name + ' ' + screenNames.join(' ');
+          matchSearch = allText.indexOf(search) !== -1;
+        }
+        entry.style.display = (matchRegion && matchSearch) ? '' : 'none';
+      });
+    }
+
+    // ==================== Search ====================
+    function filterTheaters(query) {
+      var q = query.toLowerCase().trim();
+
+      if (q) {
+        // Search across ALL regions — show all matching theaters regardless of region
+        var matchedRegions = {};
+        document.querySelectorAll('.theater-entry').forEach(function(entry) {
+          var name = entry.dataset.name || '';
+          var screenNames = [];
+          entry.querySelectorAll('.screen-item').forEach(function(s) {
+            screenNames.push((s.dataset.screenName || '').toLowerCase());
+          });
+          var allText = name + ' ' + screenNames.join(' ');
+          var match = allText.indexOf(q) !== -1;
+          entry.style.display = match ? '' : 'none';
+          if (match) {
+            matchedRegions[entry.dataset.region] = true;
+            // Auto-expand screens when searching
+            var screens = entry.querySelector('.theater-screens');
+            var arrow = entry.querySelector('.expand-arrow');
+            if (screens) screens.classList.add('open');
+            if (arrow) arrow.classList.add('open');
+          }
+        });
+      } else {
+        // No search — show current region only, collapse all
+        var region = currentRegion || document.querySelector('.region-item.active')?.dataset.region || '';
+        document.querySelectorAll('.theater-entry').forEach(function(entry) {
+          entry.style.display = entry.dataset.region === region ? '' : 'none';
+          // Collapse screens
+          var screens = entry.querySelector('.theater-screens');
+          var arrow = entry.querySelector('.expand-arrow');
+          if (screens) screens.classList.remove('open');
+          if (arrow) arrow.classList.remove('open');
+        });
+      }
+    }
+
+    // ==================== Theater expand/collapse ====================
+    function toggleTheaterScreens(row) {
+      var entry = row.closest('.theater-entry');
+      var screens = entry.querySelector('.theater-screens');
+      var arrow = row.querySelector('.expand-arrow');
+      if (screens) {
+        screens.classList.toggle('open');
+        if (arrow) arrow.classList.toggle('open');
+      }
+    }
+
+    // ==================== Chip management ====================
+    function updateChips() {
+      var chipsContainer = document.getElementById('selected-chips');
+      var noMsg = document.getElementById('no-selection-msg');
+      var checked = document.querySelectorAll('#screen-form input[name="watched_screens"]:checked');
+
+      // Clear existing chips
+      chipsContainer.querySelectorAll('.chip').forEach(function(c) { c.remove(); });
+
+      if (checked.length === 0) {
+        noMsg.style.display = '';
+        return;
+      }
+      noMsg.style.display = 'none';
+
+      checked.forEach(function(cb) {
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        var chain = cb.dataset.chain.toUpperCase();
+        var theater = cb.dataset.theaterName;
+        var screen = cb.dataset.screenName;
+        chip.innerHTML = '<span class="chain-tag">' + chain + '</span>' +
+          theater + ' ' + screen +
+          '<span class="x" onclick="removeChip(this, \'' + cb.value.replace(/'/g, "\\'") + '\')">&times;</span>';
+        chipsContainer.appendChild(chip);
+      });
+    }
+
+    function removeChip(xEl, value) {
+      var cb = document.querySelector('#screen-form input[value="' + value + '"]');
+      if (cb) {
+        cb.checked = false;
+      }
+      xEl.parentElement.remove();
+      // Check if any left
+      var remaining = document.querySelectorAll('#selected-chips .chip');
+      if (remaining.length === 0) {
+        document.getElementById('no-selection-msg').style.display = '';
+      }
+    }
+
+    // ==================== Init ====================
+    (function() {
+      // Set initial region
+      var firstRegion = document.querySelector('.region-item.active');
+      if (firstRegion) {
+        currentRegion = firstRegion.dataset.region;
+      }
+      // Build initial chips
+      updateChips();
+    })();
   </script>
 </body>
 </html>
