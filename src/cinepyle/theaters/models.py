@@ -33,7 +33,7 @@ from sqlalchemy.orm import (
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path("data/theaters.db")
-SEED_PATH = Path("data/seed/theaters.db")
+SEED_PATH = Path("seed/theaters.db")
 LEGACY_JSON_PATH = Path("data/theaters.json")
 
 

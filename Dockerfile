@@ -12,7 +12,7 @@ RUN uv sync --no-dev --no-install-project
 
 # Copy source code and seed data
 COPY src/ src/
-COPY data/seed/ data/seed/
+COPY data/seed/ seed/
 
 # Install the project
 RUN uv sync --no-dev
