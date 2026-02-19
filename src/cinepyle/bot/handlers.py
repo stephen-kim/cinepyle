@@ -51,17 +51,28 @@ async def message_handler(
     if not user_text:
         return
 
+    # Load conversation history for follow-up recognition (last 5 turns)
+    history: list[dict] = context.user_data.get("chat_history", [])
+
     # Classify intent — resolve LLM credentials (env var > dashboard settings)
     provider, api_key, model = resolve_llm()
 
     if api_key:
         try:
-            result = classify_intent(user_text, provider, api_key, model=model)
+            result = classify_intent(
+                user_text, provider, api_key, model=model, history=history,
+            )
         except Exception:
             logger.exception("LLM classification failed, using keyword fallback")
             result = classify_intent_fallback(user_text)
     else:
         result = classify_intent_fallback(user_text)
+
+    # Store conversation turn (user message + bot reply) for future context
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": result.reply})
+    # Keep last 5 turns (10 messages) to avoid token bloat
+    context.user_data["chat_history"] = history[-10:]
 
     # Dispatch based on intent
     if result.intent == Intent.RANKING:

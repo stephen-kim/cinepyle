@@ -82,7 +82,13 @@ reply 작성:
 - nearby면: 위치 전송을 요청하는 안내
 - chat이면: 자연스럽게 대화하기. 인사에는 인사로, 질문에는 답변으로
 - 지원하지 않는 기능 요청: chat으로 분류하고, 해당 기능은 없다고 알려준 뒤 비슷한 대체 기능을 제안. 예: "리뷰 기능은 아직 없어! 대신 영화 정보나 박스오피스 순위를 볼 수 있어 🎬"
-- 영화와 관련 없는 일반 대화도 chat으로 자연스럽게 응답"""
+- 영화와 관련 없는 일반 대화도 chat으로 자연스럽게 응답
+
+대화 맥락:
+- 이전 대화가 주어질 수 있음. 사용자의 후속 메시지는 이전 맥락의 보충/수정일 수 있으므로 이전 intent를 참고해서 판단
+- 예: 이전에 "인터스텔라 상영하는 극장?" → 봇이 지역을 물어봄 → "전국에서" → showtime intent, region="전국"
+- 예: 이전에 "영화 뭐해?" → 봇이 지역을 물어봄 → "강남" → showtime intent, region="강남"
+- 후속 메시지가 짧고 맥락 없이는 의미를 알기 어려운 경우, 이전 대화의 intent를 유지하고 빠진 정보를 채워넣기"""
 
 
 # ---------------------------------------------------------------------------
@@ -98,13 +104,25 @@ _DEFAULT_MODELS: dict[str, str] = {
 
 
 def classify_intent(
-    user_message: str, provider_name: str, api_key: str, model: str = "",
+    user_message: str,
+    provider_name: str,
+    api_key: str,
+    model: str = "",
+    history: list[dict] | None = None,
 ) -> ClassificationResult:
     """Classify user intent using the configured LLM provider.
 
     Uses the same provider/model conventions as digest/llm.py.
+    ``history`` is a list of {"role": "user"|"assistant", "content": "..."}
+    dicts representing recent conversation turns (for follow-up recognition).
     Raises on API errors — caller should catch and use fallback.
     """
+    # Build messages with conversation history for context
+    messages = []
+    for turn in (history or []):
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_message})
+
     if provider_name == "openai":
         import openai
 
@@ -113,7 +131,7 @@ def classify_intent(
             model=model or _DEFAULT_MODELS["openai"],
             messages=[
                 {"role": "system", "content": INTENT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
+                *messages,
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
@@ -129,7 +147,7 @@ def classify_intent(
             model=model or _DEFAULT_MODELS["anthropic"],
             max_tokens=256,
             system=INTENT_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            messages=messages,
         )
         raw = response.content[0].text
 
@@ -137,7 +155,15 @@ def classify_intent(
         from google import genai
 
         client = genai.Client(api_key=api_key)
-        prompt = f"{INTENT_SYSTEM_PROMPT}\n\n{user_message}"
+        # Google API: flatten history into prompt
+        history_text = ""
+        for turn in (history or []):
+            role_label = "사용자" if turn["role"] == "user" else "봇"
+            history_text += f"{role_label}: {turn['content']}\n"
+        prompt = (
+            f"{INTENT_SYSTEM_PROMPT}\n\n"
+            f"{history_text}사용자: {user_message}"
+        )
         response = client.models.generate_content(
             model=model or _DEFAULT_MODELS["google"],
             contents=prompt,
