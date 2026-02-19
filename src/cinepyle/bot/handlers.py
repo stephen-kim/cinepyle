@@ -551,20 +551,29 @@ def _parse_time_filter(time_str: str) -> str:
 
 
 def _find_theaters_for_showtime(db, region: str, theater_query: str):
-    """Find theaters matching region or specific theater name."""
+    """Find theaters matching region or specific theater name.
+
+    Supports flexible matching: "용산 CGV" matches "CGV용산아이파크몰"
+    by checking that all tokens in the query appear in the theater name
+    or address (order-independent).
+    """
     results = []
 
-    # Search by full query string (e.g. "CGV용산")
     search_terms = [s for s in [region, theater_query] if s]
     if not search_terms:
         return results
 
     for term in search_terms:
-        q = term.lower()
+        # Split into tokens and remove whitespace
+        tokens = [tok.lower() for tok in term.split() if tok]
+        if not tokens:
+            continue
         for t in db.theaters:
             if t in results:
                 continue
-            if q in t.name.lower() or q in t.address.lower():
+            haystack = f"{t.name} {t.address}".lower()
+            # All tokens must appear somewhere in name+address
+            if all(tok in haystack for tok in tokens):
                 results.append(t)
 
     return results
