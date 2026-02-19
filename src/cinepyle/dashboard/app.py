@@ -53,6 +53,17 @@ def _base_context(request: Request, active_tab: str = "digest", **extra):
         if theaters_in_region:
             regions[region_name] = theaters_in_region
 
+    # Fallback: if no theaters have region data yet (pre-sync), group by chain
+    if not regions:
+        _CHAIN_LABELS = {
+            "cgv": "CGV", "lotte": "롯데시네마",
+            "megabox": "메가박스", "cineq": "씨네Q", "indie": "인디",
+        }
+        for chain_key, label in _CHAIN_LABELS.items():
+            chain_theaters = chains.get(chain_key, [])
+            if chain_theaters:
+                regions[label] = chain_theaters
+
     last_sync_at = db.last_sync_at
     db.close()
 
