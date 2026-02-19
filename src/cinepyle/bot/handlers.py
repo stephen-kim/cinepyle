@@ -550,6 +550,80 @@ def _parse_time_filter(time_str: str) -> str:
     return ""
 
 
+def _match_movie_title(query: str, titles: set[str]) -> set[str]:
+    """Match user's movie query against actual screening titles.
+
+    Uses LLM for fuzzy matching (typos, spacing, transliteration).
+    Falls back to simple substring matching without spaces.
+    Returns the set of matched original title strings.
+    """
+    # 1) Try LLM matching
+    provider, api_key, model = resolve_llm()
+    if api_key:
+        try:
+            return _llm_match_movie(query, titles, provider, api_key, model)
+        except Exception:
+            logger.exception("LLM movie matching failed, using fallback")
+
+    # 2) Fallback: space-stripped substring
+    q = query.replace(" ", "").lower()
+    return {t for t in titles if q in t.replace(" ", "").lower()}
+
+
+def _llm_match_movie(
+    query: str, titles: set[str], provider: str, api_key: str, model: str,
+) -> set[str]:
+    """Ask LLM to pick matching movie titles from a list."""
+    import json as _json
+
+    titles_list = sorted(titles)
+    prompt = (
+        "아래 영화 제목 목록에서 사용자가 찾는 영화와 일치하는 제목을 모두 골라줘.\n"
+        "오타, 띄어쓰기 차이, 외래어 표기 차이를 감안해서 판단해.\n"
+        "일치하는 제목이 없으면 빈 배열을 반환해.\n\n"
+        f"사용자 검색어: {query}\n\n"
+        f"영화 목록:\n" + "\n".join(f"- {t}" for t in titles_list) + "\n\n"
+        'JSON 형식으로만 응답: {"matches": ["제목1", "제목2"]}'
+    )
+
+    if provider == "openai":
+        import openai
+        client = openai.OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=model or "gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        raw = _json.loads(resp.choices[0].message.content)
+    elif provider == "anthropic":
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=model or "claude-3-5-haiku-latest",
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = _json.loads(resp.content[0].text)
+    elif provider == "google":
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        gen_model = genai.GenerativeModel(model or "gemini-2.0-flash")
+        resp = gen_model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json", temperature=0,
+            ),
+        )
+        raw = _json.loads(resp.text)
+    else:
+        return set()
+
+    matches = raw.get("matches", [])
+    # Only return titles that actually exist in our set
+    return {t for t in matches if t in titles}
+
+
 # Generic words to ignore when matching theater searches
 _NOISE_WORDS = {
     "영화관", "극장", "시네마", "cinema", "theater", "theatre",
@@ -644,6 +718,16 @@ async def _do_showtime(update: Update, params: dict) -> None:
         key=lambda s: (0 if f"{s.chain}:{s.theater_code}" in pref_keys else 1)
     )
 
+    # Resolve movie filter via LLM if available
+    matched_titles: set[str] | None = None
+    if movie_filter:
+        all_titles = set()
+        for sched in schedules:
+            for s in sched.screenings:
+                all_titles.add(s.movie_name)
+        if all_titles:
+            matched_titles = _match_movie_title(movie_filter, all_titles)
+
     # Build output
     date_display = target_date.strftime("%Y-%m-%d")
     header = f"🎬 상영시간 ({date_display})"
@@ -672,12 +756,10 @@ async def _do_showtime(update: Update, params: dict) -> None:
                 if not s.start_time or s.start_time.replace(":", "") >= min_time
             ]
 
-        # Filter by movie (ignore spaces for flexible matching)
-        if movie_filter:
-            mf = movie_filter.replace(" ", "").lower()
+        # Filter by movie
+        if matched_titles is not None:
             screenings = [
-                s for s in screenings
-                if mf in s.movie_name.replace(" ", "").lower()
+                s for s in screenings if s.movie_name in matched_titles
             ]
 
         if not screenings:
