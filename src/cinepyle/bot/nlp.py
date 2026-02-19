@@ -46,9 +46,9 @@ TOOL_DEFINITIONS: list[dict] = [
         "description": "상영시간 조회. 사용자가 특정 지역, 시간, 날짜, 영화, 극장의 상영시간을 알고 싶을 때. 시간/지역/극장 언급이 있으면 book이 아니라 이것.",
         "parameters": {
             "reply": {"type": "string", "description": "친근한 한국어 안내 메시지 (반말, 이모지 포함)"},
-            "region": {"type": "string", "description": "지역명 (강남, 분당, 전국 등). 없으면 빈 문자열"},
-            "time": {"type": "string", "description": "시간 (원문 그대로). 없으면 빈 문자열"},
-            "date": {"type": "string", "description": "날짜 (원문 그대로). 없으면 빈 문자열"},
+            "region": {"type": "string", "description": "지역명 (강남, 분당, 송도, 부산 등). 반드시 추출할 것. 없으면 빈 문자열"},
+            "time": {"type": "string", "description": "시간 (원문 그대로: '3시반', '19:00', '저녁 7시' 등). 반드시 추출할 것. 없으면 빈 문자열"},
+            "date": {"type": "string", "description": "날짜 (원문 그대로: '내일', '모레', '2월 21일' 등). '내일', '오늘' 등 반드시 추출할 것. 없으면 빈 문자열"},
             "movie": {"type": "string", "description": "영화 제목만. 없으면 빈 문자열"},
             "theater": {"type": "string", "description": "구체적 극장명 (CGV용산 등). 없으면 빈 문자열"},
         },
