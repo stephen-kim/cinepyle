@@ -64,11 +64,11 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "nearby",
-        "description": "근처/주변/가까운 영화관 찾기. '근처 영화관', '가까운 극장', '영화관 어디', '주변 CGV' 등. 위치 확인은 봇이 따로 처리하므로 이 도구를 호출하면 됨.",
+        "description": "근처/주변/가까운 영화관 찾기. '근처 영화관', '가까운 극장', '영화관 어디', '주변 CGV', '이근처 영화관', '여기 근처' 등. 위치 확인은 봇이 따로 처리하므로 이 도구를 호출하면 됨. '이근처', '여기근처', '이 근처' 등 대명사는 region이 아님 (빈 문자열로).",
         "parameters": {
             "reply": {"type": "string", "description": "위치 전송을 요청하는 안내 메시지"},
-            "chain": {"type": "string", "description": "체인명 (CGV, 롯데시네마, 메가박스 등). 없으면 빈 문자열"},
-            "region": {"type": "string", "description": "지역명 (신림, 강남 등). 없으면 빈 문자열"},
+            "chain": {"type": "string", "description": "체인명 (CGV, 롯데시네마, 메가박스 등). 반드시 추출할 것. 없으면 빈 문자열"},
+            "region": {"type": "string", "description": "구체적 지역명 (신림동, 강남, 분당 등). '이근처/여기/이쪽' 같은 대명사는 빈 문자열로. 없으면 빈 문자열"},
         },
         "required": ["reply"],
     },
@@ -470,17 +470,25 @@ def _extract_region_for_nearby(text: str, trigger_kw: str, chain: str) -> str:
     import re
 
     t = text
-    # Remove trigger keyword
+    # 1) Remove pronoun+trigger compounds FIRST (before splitting trigger kw)
+    #    "이근처" / "여기 근처" / "여기근처" → not a real location
+    for compound in ("이근처", "여기근처", "이 근처", "여기 근처",
+                      "이주변", "여기주변", "이 주변", "여기 주변"):
+        t = t.replace(compound, " ")
+    # 2) Remove remaining pronouns/demonstratives
+    for pronoun in ("여기", "여긴", "이쪽", "우리"):
+        t = t.replace(pronoun, " ")
+    # 3) Remove trigger keyword
     t = t.replace(trigger_kw, " ")
-    # Remove chain names
+    # 4) Remove chain names
     for name in ("CGV", "cgv", "씨지브이", "메가박스", "megabox",
                   "롯데시네마", "롯데", "lotte", "씨네q", "cineq"):
         t = re.sub(re.escape(name), " ", t, flags=re.IGNORECASE)
-    # Remove common noise words
+    # 5) Remove common noise words
     for noise in ("영화관", "극장", "시네마", "찾아줘", "찾아", "알려줘",
                    "어디야", "어디", "있어", "있나", "있니", "있지",
-                   "뭐", "뭐있지", "좀", "서울", "내일", "오늘", "에서",
-                   "보여줘", "보여", "영화", "첫", "뭐해", "뭐하",
+                   "뭐", "뭐있지", "뭐있니", "좀", "내일", "오늘",
+                   "에서", "보여줘", "보여", "영화", "첫", "뭐해", "뭐하",
                    "야", "요", "the", "a"):
         t = t.replace(noise, " ")
     # Clean up whitespace
