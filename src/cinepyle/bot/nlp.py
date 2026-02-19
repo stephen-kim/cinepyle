@@ -200,6 +200,91 @@ _CHAIN_KEYWORDS = {
 _THEATER_INFO_KEYWORDS = ["상영관", "스크린", "imax", "아이맥스", "4dx", "돌비", "좌석"]
 
 
+def _parse_showtime_params(text: str) -> dict:
+    """Extract region, time, date, movie, theater from a showtime query."""
+    import re
+
+    msg = text.strip()
+    region = ""
+    time_str = ""
+    date_str = ""
+    movie = ""
+    theater = ""
+
+    # --- Date extraction ---
+    if "내일모레" in msg or "모레" in msg:
+        date_str = "모레"
+    elif "내일" in msg:
+        date_str = "내일"
+    elif "오늘" in msg:
+        date_str = "오늘"
+    else:
+        m = re.search(r"(\d{1,2})월\s*(\d{1,2})일", msg)
+        if m:
+            date_str = m.group(0)
+
+    # --- Time extraction ---
+    # "저녁 7시", "오후 3시 30분", "19시", "7시반", etc.
+    m = re.search(
+        r"(오전|오후|저녁|아침|밤|낮)?\s*(\d{1,2})\s*시\s*(반|(\d{1,2})\s*분)?",
+        msg,
+    )
+    if m:
+        period = m.group(1) or ""
+        hour = int(m.group(2))
+        if m.group(3) == "반":
+            minute = 30
+        elif m.group(4):
+            minute = int(m.group(4))
+        else:
+            minute = 0
+        if period in ("오후", "저녁", "밤") and hour < 12:
+            hour += 12
+        time_str = f"{hour}시{f' {minute}분' if minute else ''}"
+
+    # --- Theater / chain detection ---
+    # Match known chain+theater patterns like "CGV용산", "메가박스 코엑스"
+    chain_theater_match = re.search(
+        r"(CGV|씨지브이|롯데시네마|롯데|메가박스)\s*(\S+)?",
+        msg,
+        re.IGNORECASE,
+    )
+    if chain_theater_match:
+        full = chain_theater_match.group(0).strip()
+        # Remove trailing particles (에, 에서, 의, 은, 는, 이, 가, 을, 를)
+        theater = re.sub(r"[에서의은는이가을를]+$", "", full)
+
+    # --- Region extraction ---
+    # Common Korean region/district names
+    _REGIONS = [
+        "강남", "강북", "강서", "강동", "서초", "송파", "잠실", "영등포",
+        "마포", "홍대", "신촌", "종로", "명동", "용산", "여의도",
+        "분당", "판교", "일산", "수원", "인천", "부산", "대구", "광주",
+        "대전", "울산", "제주", "성남", "안양", "부천", "고양", "청주",
+        "천안", "전주", "포항", "창원", "김해", "구리", "하남", "광명",
+        "동탄", "세종", "김포", "양산", "거제", "통영", "속초", "춘천",
+        "원주", "경주", "목포", "순천", "여수", "익산", "군산", "서산",
+        "평택", "오산", "이천", "양주", "의정부", "파주", "노원", "왕십리",
+        "건대", "성수", "합정", "상암", "목동", "구로", "신도림", "가산",
+        "코엑스", "월드몰", "아이파크몰",
+    ]
+    for r in _REGIONS:
+        if r in msg:
+            region = r
+            # If no explicit theater was found, use chain + region as theater query
+            if not theater:
+                theater = r
+            break
+
+    return {
+        "region": region,
+        "time": time_str,
+        "date": date_str,
+        "movie": movie,
+        "theater": theater,
+    }
+
+
 def classify_intent_fallback(user_message: str) -> ClassificationResult:
     """Keyword-based intent classification when LLM is unavailable."""
     msg = user_message.lower().strip()
@@ -234,16 +319,11 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
     has_showtime_kw = any(kw in msg for kw in _SHOWTIME_KEYWORDS)
     has_time_signal = any(kw in msg for kw in _SHOWTIME_TIME_SIGNALS)
     if has_showtime_kw or has_time_signal:
+        params = _parse_showtime_params(user_message)
         return ClassificationResult(
             intent=Intent.SHOWTIME,
             reply="상영시간을 조회할게요!",
-            params={
-                "region": "",
-                "time": "",
-                "date": "",
-                "movie": "",
-                "theater": user_message,
-            },
+            params=params,
         )
 
     # Theater info (specific theater query — check before theater_list)
