@@ -23,7 +23,7 @@ from cinepyle.bot.nlp import (
     classify_intent,
     classify_intent_fallback,
 )
-from cinepyle.config import KOBIS_API_KEY
+from cinepyle.config import KOBIS_API_KEY, LLM_API_KEY, LLM_PROVIDER
 from cinepyle.digest.settings import DigestSettings
 from cinepyle.scrapers.boxoffice import fetch_daily_box_office
 from cinepyle.theaters.finder import find_nearest_theaters
@@ -53,14 +53,14 @@ async def message_handler(
     if not user_text:
         return
 
-    # Classify intent
+    # Classify intent — resolve LLM credentials (env var > dashboard settings)
     settings = DigestSettings.load()
+    provider = LLM_PROVIDER or settings.llm_provider
+    api_key = LLM_API_KEY or settings.llm_api_key
 
-    if settings.llm_api_key:
+    if api_key:
         try:
-            result = classify_intent(
-                user_text, settings.llm_provider, settings.llm_api_key
-            )
+            result = classify_intent(user_text, provider, api_key)
         except Exception:
             logger.exception("LLM classification failed, using keyword fallback")
             result = classify_intent_fallback(user_text)

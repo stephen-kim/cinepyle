@@ -182,6 +182,18 @@ def main() -> None:
 
     app.post_shutdown = _shutdown_browser
 
+    # Send startup greeting to Telegram
+    async def _send_startup_greeting(application) -> None:
+        try:
+            await application.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text="🎬 Cinepyle 봇이 시작되었습니다!",
+            )
+        except Exception:
+            logger.warning("Failed to send startup greeting (TELEGRAM_CHAT_ID may be invalid)")
+
+    app.post_init = _send_startup_greeting
+
     logger.info("Bot starting...")
     app.run_polling()
 
