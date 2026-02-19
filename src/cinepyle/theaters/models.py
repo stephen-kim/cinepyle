@@ -299,10 +299,10 @@ class TheaterDatabase:
         """Open (or create) the SQLite database.
 
         Priority:
-        1. Existing data/theaters.db → use as-is (user data)
-        2. Legacy data/theaters.json → migrate to SQLite, remove JSON
-        3. Seed data/seed/theaters.db → copy to data/theaters.db
-        4. Empty database
+        1. No data/theaters.db → copy seed if available, otherwise empty
+        2. Existing data/theaters.db + newer seed → merge theater data
+           from seed (preserves user settings like watched_screens)
+        3. Legacy theaters.json → one-time migration
         """
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -358,7 +358,104 @@ class TheaterDatabase:
             except OSError:
                 pass
 
+        # Merge from seed if seed is newer
+        db._merge_from_seed_if_newer()
+
         return db
+
+    def _merge_from_seed_if_newer(self) -> None:
+        """Merge theater data from seed DB if its sync timestamp is newer.
+
+        This runs on every startup. If the Docker image ships a newer seed
+        (via ``data/seed/theaters.db``), the theater/screen rows are replaced
+        while user-side data (settings JSON files) is untouched.
+        """
+        if not SEED_PATH.exists():
+            return
+
+        local_sync = self.get_meta("last_sync_at") or ""
+        seed_sync = self._read_seed_sync_at()
+        if not seed_sync:
+            return
+        if local_sync >= seed_sync:
+            return  # local is same age or newer
+
+        logger.info(
+            "Seed DB is newer (seed=%s, local=%s) — merging theater data",
+            seed_sync[:19], local_sync[:19] if local_sync else "none",
+        )
+
+        import sqlite3
+
+        seed_conn = sqlite3.connect(str(SEED_PATH))
+        seed_conn.row_factory = sqlite3.Row
+        try:
+            # Read all theaters from seed
+            seed_theaters = seed_conn.execute(
+                "SELECT chain, theater_code, name, region, address, "
+                "latitude, longitude FROM theaters"
+            ).fetchall()
+            seed_screens = seed_conn.execute(
+                "SELECT chain, theater_code, screen_id, name, "
+                "screen_type, seat_count, is_special FROM screens"
+            ).fetchall()
+        finally:
+            seed_conn.close()
+
+        # Group screens by (chain, theater_code)
+        screen_map: dict[tuple[str, str], list[dict]] = {}
+        for row in seed_screens:
+            key = (row["chain"], row["theater_code"])
+            screen_map.setdefault(key, []).append(dict(row))
+
+        # Replace all theater + screen data
+        self._session.execute(delete(Screen))
+        self._session.execute(delete(Theater))
+        self._session.flush()
+
+        count = 0
+        for row in seed_theaters:
+            t = Theater(
+                chain=row["chain"],
+                theater_code=row["theater_code"],
+                name=row["name"],
+                region=row["region"] or "",
+                address=row["address"] or "",
+                latitude=float(row["latitude"] or 0),
+                longitude=float(row["longitude"] or 0),
+            )
+            key = (row["chain"], row["theater_code"])
+            for s in screen_map.get(key, []):
+                t.screens.append(Screen(
+                    chain=row["chain"],
+                    theater_code=row["theater_code"],
+                    screen_id=s["screen_id"],
+                    name=s["name"],
+                    screen_type=s["screen_type"] or "normal",
+                    seat_count=int(s["seat_count"] or 0),
+                    is_special=bool(s["is_special"]),
+                ))
+            self._session.add(t)
+            count += 1
+
+        self.set_meta("last_sync_at", seed_sync)
+        self._session.commit()
+        logger.info("Merged %d theaters from seed DB", count)
+
+    @staticmethod
+    def _read_seed_sync_at() -> str:
+        """Read last_sync_at from the seed database."""
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(str(SEED_PATH))
+            row = conn.execute(
+                "SELECT value FROM sync_meta WHERE key = 'last_sync_at'"
+            ).fetchone()
+            conn.close()
+            return row[0] if row else ""
+        except Exception:
+            return ""
 
     def _migrate_from_json(self) -> None:
         """One-time migration from theaters.json to SQLite."""
