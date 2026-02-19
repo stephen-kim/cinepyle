@@ -9,13 +9,7 @@ import uvicorn
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from cinepyle.config import DASHBOARD_PORT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from cinepyle.bot.handlers import (
-    help_command,
-    location_handler,
-    nearby_command,
-    ranking_command,
-    start_command,
-)
+from cinepyle.bot.handlers import location_handler, message_handler, start_command
 from cinepyle.dashboard.app import app as dashboard_app
 from cinepyle.dashboard.app import set_bot_context
 from cinepyle.digest.job import send_digest_job
@@ -84,13 +78,13 @@ def main() -> None:
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Command handlers
+    # /start for first-time users (Telegram sends this automatically)
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("ranking", ranking_command))
-    app.add_handler(CommandHandler("nearby", nearby_command))
 
-    # Location message handler
+    # All text messages go through NLP intent classification
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    # Location messages (for nearby theater flow)
     app.add_handler(MessageHandler(filters.LOCATION, location_handler))
 
     # Scheduled jobs
@@ -171,6 +165,22 @@ def main() -> None:
             "Screen alerts scheduled every %d min",
             screen_settings.check_interval_minutes,
         )
+
+    # Register BrowserManager shutdown (cleanup Playwright if used)
+    async def _shutdown_browser(application) -> None:
+        try:
+            from cinepyle.browser.manager import BrowserManager
+
+            mgr = BrowserManager._instance
+            if mgr is not None:
+                await mgr.shutdown()
+                logger.info("BrowserManager shut down")
+        except ImportError:
+            pass
+        except Exception:
+            logger.exception("BrowserManager shutdown error")
+
+    app.post_shutdown = _shutdown_browser
 
     logger.info("Bot starting...")
     app.run_polling()
