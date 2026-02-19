@@ -68,7 +68,7 @@ TOOL_DEFINITIONS: list[dict] = [
         "parameters": {
             "reply": {"type": "string", "description": "위치 전송을 요청하는 안내 메시지"},
             "chain": {"type": "string", "description": "체인명 (CGV, 롯데시네마, 메가박스 등). 반드시 추출할 것. 없으면 빈 문자열"},
-            "region": {"type": "string", "description": "구체적 지역명 (신림동, 강남, 분당 등). '이근처/여기/이쪽' 같은 대명사는 빈 문자열로. 없으면 빈 문자열"},
+            "region": {"type": "string", "description": "구체적 지역명 (신림동, 강남, 분당 등). '이근처/여기/이쪽/지금 위치/현재 위치/내 위치' 같은 대명사는 빈 문자열로. 없으면 빈 문자열"},
         },
         "required": ["reply"],
     },
@@ -148,7 +148,7 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "seat_map",
-        "description": "좌석 배치도/좌석도 보기. 특정 상영 회차의 좌석 현황 이미지. '좌석 보여줘', '자리 보여줘', '좌석 배치도', '어디 남았어' 등.",
+        "description": "좌석 배치도/좌석도 보기. 특정 상영 회차의 좌석 현황 이미지. '좌석 보여줘', '자리 보여줘', '좌석 배치도', '어디 남았어', '자리 남았어?', '빈자리', '자리 있어?' 등.",
         "parameters": {
             "reply": {"type": "string", "description": "친근한 한국어 안내 메시지"},
             "region": {"type": "string", "description": "지역명. 없으면 빈 문자열"},
@@ -188,10 +188,21 @@ TOOL_SYSTEM_PROMPT = """\
 - "부산에서 영화 보려는데" / "내일 4시반 부산역 도착인데 영화 추천" → showtime (지역+시간이 있으면 상영시간 조회!)
 - "추천해줘" / "뭐 볼만해" / "볼만한 영화" + 지역/시간 → showtime (추천=상영시간 조회)
 
-## 의도 판별 우선순위
+## 의도 판별 우선순위 (중요!)
+- "뭐해" / "뭐해?" / "뭐하니" 단독 (다른 단어 없이) → 절대로 showtime이 아님! → chat (인사/잡담)
+- "뭐해" + 지역/극장명 ("강남 뭐해", "CGV 뭐해") → showtime
 - 지역 + 시간/날짜가 언급되면 → showtime (영화 보려는 맥락)
 - "추천"이라는 단어가 있어도 지역/시간이 있으면 → showtime (nearby나 new_movies가 아님!)
 - 단순 "추천해줘" (지역/시간 없음) → new_movies 또는 ranking
+- "영화 보고싶다" / "영화나 볼까" + 지역/시간 없음 → new_movies
+- "애들 데리고" / "아이랑 볼만한" / "데이트 영화" → showtime
+- "지난주에 뭐 봤더라" / "봤던 영화" → booking_history
+- "자리 어디 남았어" / "어디 남았어" / "빈자리" / "자리 있어?" → seat_map
+- "지금 위치에서 가까운" / "내 위치에서" / "현재 위치 근처" → nearby (region은 빈 문자열!)
+
+## 특별 주의
+- "뭐해"만 단독으로 있으면 → 절대 showtime 호출하지 말 것. 도구 호출 없이 chat으로 텍스트 응답.
+- "지금 위치", "현재 위치", "내 위치" → 실제 지역명이 아님 → region에 넣지 말 것 (빈 문자열)
 
 ## reply 작성 규칙
 - 도구 호출 시 reply 파라미터에 짧은 안내 메시지를 넣으세요 (실제 데이터는 봇이 따로 붙여줌).
@@ -467,7 +478,7 @@ _CHAIN_KEYWORDS = {
     "예술영화관": "독립영화관",
 }
 
-_SEAT_MAP_KEYWORDS = ["좌석 보여", "좌석 배치", "좌석도", "좌석 현황", "자리 보여", "좌석 사진", "seat map"]
+_SEAT_MAP_KEYWORDS = ["좌석 보여", "좌석 배치", "좌석도", "좌석 현황", "자리 보여", "좌석 사진", "seat map", "자리 남았", "빈자리", "자리 있어", "어디 남았"]
 _THEATER_INFO_KEYWORDS = ["상영관", "스크린", "imax", "아이맥스", "4dx", "돌비"]
 
 
@@ -487,10 +498,11 @@ def _extract_region_for_nearby(text: str, trigger_kw: str, chain: str) -> str:
     # 1) Remove pronoun+trigger compounds FIRST (before splitting trigger kw)
     #    "이근처" / "여기 근처" / "여기근처" → not a real location
     for compound in ("이근처", "여기근처", "이 근처", "여기 근처",
-                      "이주변", "여기주변", "이 주변", "여기 주변"):
+                      "이주변", "여기주변", "이 주변", "여기 주변",
+                      "지금 위치", "현재 위치", "내 위치", "지금위치", "현재위치"):
         t = t.replace(compound, " ")
-    # 2) Remove remaining pronouns/demonstratives
-    for pronoun in ("여기", "여긴", "이쪽", "우리"):
+    # 2) Remove remaining pronouns/demonstratives/abstract location words
+    for pronoun in ("여기", "여긴", "이쪽", "우리", "위치", "제일", "가장"):
         t = t.replace(pronoun, " ")
     # 3) Remove trigger keyword
     t = t.replace(trigger_kw, " ")
@@ -560,6 +572,11 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
     # Showtime
     has_showtime_kw = any(kw in msg for kw in _SHOWTIME_KEYWORDS)
     has_time_signal = any(kw in msg for kw in _SHOWTIME_TIME_SIGNALS)
+    # "뭐해"/"뭐하" alone (without location/movie context) should be chat, not showtime
+    if has_showtime_kw and not has_time_signal:
+        stripped = msg.replace("뭐해", "").replace("뭐하", "").replace("?", "").replace("~", "").replace("！", "").replace("!", "").strip()
+        if not stripped:
+            has_showtime_kw = False  # bare "뭐해" → chat
     if has_showtime_kw or has_time_signal:
         return ClassificationResult(
             intent=Intent.SHOWTIME,
