@@ -324,7 +324,7 @@ def fetch_schedules_for_theaters(
             return None
 
     results = []
-    max_workers = min(len(theaters), 10)
+    max_workers = min(len(theaters), 20)
     if max_workers == 0:
         return results
 

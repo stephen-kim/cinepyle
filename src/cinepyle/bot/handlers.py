@@ -733,13 +733,18 @@ async def _do_showtime(update: Update, params: dict) -> None:
             )
         return
 
-    # Limit theaters
-    max_theaters = 30 if is_nationwide else 10
-    matched = matched[:max_theaters]
+    # Limit theaters (nationwide uses all matched; regional caps at 10)
+    if not is_nationwide:
+        matched = matched[:10]
 
-    await update.message.reply_text(
-        f"🔍 {len(matched)}개 극장 상영시간 조회 중..."
-    )
+    if is_nationwide:
+        await update.message.reply_text(
+            f"🔍 전국 {len(matched)}개 극장에서 '{movie_filter}' 검색 중... (잠시 기다려주세요)"
+        )
+    else:
+        await update.message.reply_text(
+            f"🔍 {len(matched)}개 극장 상영시간 조회 중..."
+        )
 
     # Fetch schedules
     theaters_input = [(t.chain, t.theater_code, t.name) for t in matched]
