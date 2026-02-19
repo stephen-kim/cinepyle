@@ -550,12 +550,19 @@ def _parse_time_filter(time_str: str) -> str:
     return ""
 
 
+# Generic words to ignore when matching theater searches
+_NOISE_WORDS = {
+    "영화관", "극장", "시네마", "cinema", "theater", "theatre",
+    "근처", "주변", "에서", "있는", "오늘", "내일", "상영",
+}
+
+
 def _find_theaters_for_showtime(db, region: str, theater_query: str):
     """Find theaters matching region or specific theater name.
 
     Supports flexible matching: "용산 CGV" matches "CGV용산아이파크몰"
     by checking that all tokens in the query appear in the theater name
-    or address (order-independent).
+    or address (order-independent). Generic words like "영화관" are ignored.
     """
     results = []
 
@@ -564,8 +571,11 @@ def _find_theaters_for_showtime(db, region: str, theater_query: str):
         return results
 
     for term in search_terms:
-        # Split into tokens and remove whitespace
-        tokens = [tok.lower() for tok in term.split() if tok]
+        # Split into tokens, remove noise words
+        tokens = [
+            tok.lower() for tok in term.split()
+            if tok and tok not in _NOISE_WORDS
+        ]
         if not tokens:
             continue
         for t in db.theaters:
