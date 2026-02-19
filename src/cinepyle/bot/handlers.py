@@ -630,6 +630,9 @@ _NOISE_WORDS = {
     "근처", "주변", "에서", "있는", "오늘", "내일", "상영",
 }
 
+# Keywords meaning "all theaters nationwide"
+_NATIONWIDE_WORDS = {"전국", "전체", "아무데나", "어디든", "전부"}
+
 
 def _find_theaters_for_showtime(db, region: str, theater_query: str):
     """Find theaters matching region or specific theater name.
@@ -679,23 +682,41 @@ async def _do_showtime(update: Update, params: dict) -> None:
     target_date = _resolve_date(date_str)
     min_time = _parse_time_filter(time_str)
 
+    # Check if user wants nationwide search
+    all_terms = " ".join(s for s in [region, theater_query] if s)
+    is_nationwide = any(w in all_terms for w in _NATIONWIDE_WORDS)
+
+    # Nationwide without movie filter is too broad
+    if is_nationwide and not movie_filter:
+        await update.message.reply_text(
+            "전국 검색은 영화 제목과 함께 알려줘!\n"
+            "(예: 인터스텔라 전국 상영관)"
+        )
+        return
+
     # If fallback mode, try to extract region from theater_query
-    if not region and theater_query:
+    if not is_nationwide and not region and theater_query:
         region = theater_query
 
     # Find theaters
     db = TheaterDatabase.load()
     try:
-        matched = _find_theaters_for_showtime(db, region, theater_query)
+        if is_nationwide:
+            # Sample: pick theaters with screens (likely active),
+            # spread across chains for broad coverage
+            all_theaters = [t for t in db.theaters if t.screens]
+            matched = all_theaters
+        else:
+            matched = _find_theaters_for_showtime(db, region, theater_query)
 
-        # No region/theater specified → use preferred theaters
-        if not matched and not region and not theater_query:
-            prefs = TheaterPreferences.load()
-            if prefs.preferred_theaters:
-                pref_set = set(prefs.preferred_theaters)
-                for t in db.theaters:
-                    if t.key in pref_set:
-                        matched.append(t)
+            # No region/theater specified → use preferred theaters
+            if not matched and not region and not theater_query:
+                prefs = TheaterPreferences.load()
+                if prefs.preferred_theaters:
+                    pref_set = set(prefs.preferred_theaters)
+                    for t in db.theaters:
+                        if t.key in pref_set:
+                            matched.append(t)
     finally:
         db.close()
 
@@ -712,8 +733,9 @@ async def _do_showtime(update: Update, params: dict) -> None:
             )
         return
 
-    # Limit to 10 theaters to avoid rate limits
-    matched = matched[:10]
+    # Limit theaters
+    max_theaters = 30 if is_nationwide else 10
+    matched = matched[:max_theaters]
 
     await update.message.reply_text(
         f"🔍 {len(matched)}개 극장 상영시간 조회 중..."

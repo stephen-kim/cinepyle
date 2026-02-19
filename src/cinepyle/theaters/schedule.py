@@ -309,17 +309,32 @@ def fetch_schedules_for_theaters(
     theaters: list[tuple[str, str, str]],  # [(chain, theater_code, name), ...]
     target_date: date | None = None,
 ) -> list[TheaterSchedule]:
-    """Fetch schedules for multiple theaters across chains."""
-    results = []
-    for chain, theater_code, name in theaters:
+    """Fetch schedules for multiple theaters across chains (parallel)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one(args):
+        chain, theater_code, name = args
         fetcher = _CHAIN_FETCHERS.get(chain)
         if not fetcher:
-            continue
+            return None
         try:
-            schedule = fetcher(theater_code, name, target_date)
-            results.append(schedule)
+            return fetcher(theater_code, name, target_date)
         except Exception:
             logger.debug("Schedule fetch failed for %s:%s", chain, theater_code)
+            return None
+
+    results = []
+    max_workers = min(len(theaters), 10)
+    if max_workers == 0:
+        return results
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_one, t): t for t in theaters}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                results.append(result)
+
     return results
 
 
