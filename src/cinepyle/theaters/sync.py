@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 
 import requests
 
+from datetime import timedelta as _timedelta
+
 from cinepyle.theaters.data_cgv import data as cgv_static_data
 from cinepyle.theaters.data_indie import data as indie_static_data
 from cinepyle.theaters.models import (
@@ -40,6 +42,23 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
+
+# Number of days to scan forward for screen discovery.
+# Schedule-based APIs only return screens with active showtimes on a given day.
+# Scanning multiple days captures screens that are idle today but active later.
+_SCREEN_SCAN_DAYS = 7
+
+
+def _scan_dates() -> list[str]:
+    """Return date strings (YYYYMMDD) for multi-day screen scan."""
+    base = datetime.now()
+    return [(base + _timedelta(days=d)).strftime("%Y%m%d") for d in range(_SCREEN_SCAN_DAYS)]
+
+
+def _scan_dates_dash() -> list[str]:
+    """Return date strings (YYYY-MM-DD) for multi-day screen scan."""
+    base = datetime.now()
+    return [(base + _timedelta(days=d)).strftime("%Y-%m-%d") for d in range(_SCREEN_SCAN_DAYS)]
 
 
 # =========================================================================
@@ -205,7 +224,8 @@ def sync_cgv() -> list[Theater]:
             logger.exception("CGV region %s sync failed", region_code)
 
     # Step 2: For each theater, get individual halls from schedule API
-    today = datetime.now().strftime("%Y%m%d")
+    # Scan multiple days to discover screens that are idle today
+    scan_dates = _scan_dates()
     theaters: list[Theater] = []
 
     for site_no, info in theater_info.items():
@@ -213,15 +233,18 @@ def sync_cgv() -> list[Theater]:
         lat = float(static.get("Latitude", 0))
         lon = float(static.get("Longitude", 0))
 
+        seen_screens: set[str] = set()
         screens: list[Screen] = []
 
-        # Try to get individual halls from schedule
-        try:
-            sched_data = _cgv_get(
-                "/cnm/atkt/searchMovScnInfo",
-                f"coCd=A420&siteNo={site_no}&scnYmd={today}&rtctlScopCd=01",
-            )
-            if sched_data:
+        # Try to get individual halls from schedule (multi-day scan)
+        for scan_date in scan_dates:
+            try:
+                sched_data = _cgv_get(
+                    "/cnm/atkt/searchMovScnInfo",
+                    f"coCd=A420&siteNo={site_no}&scnYmd={scan_date}&rtctlScopCd=01",
+                )
+                if not sched_data:
+                    continue
                 # API wraps in {"statusCode": 0, "data": [...]}
                 raw = sched_data.get("data", sched_data)
                 items = (
@@ -230,7 +253,6 @@ def sync_cgv() -> list[Theater]:
                     else raw.get("list", raw.get("movieScnList", []))
                 )
 
-                seen_screens: set[str] = set()
                 for item in items:
                     scns_no = str(item.get("scnsNo", ""))
                     scns_nm = item.get("expoScnsNm", "") or item.get("scnsNm", "")
@@ -250,8 +272,8 @@ def sync_cgv() -> list[Theater]:
                         seat_count=seat_count,
                         is_special=screen_type in SPECIAL_TYPES,
                     ))
-        except Exception:
-            logger.debug("CGV schedule fetch failed for %s", site_no)
+            except Exception:
+                logger.debug("CGV schedule fetch failed for %s on %s", site_no, scan_date)
 
         # Fallback: if schedule returned no screens, use rcmGradList
         if not screens:
@@ -316,7 +338,7 @@ def sync_lotte() -> list[Theater]:
     items = [x for x in items if x.get("DivisionCode") != 2]
 
     theaters: list[Theater] = []
-    today = datetime.now().strftime("%Y-%m-%d")
+    scan_dates = _scan_dates_dash()
 
     for cinema in items:
         cinema_id = str(cinema.get("CinemaID", ""))
@@ -344,42 +366,44 @@ def sync_lotte() -> list[Theater]:
         except Exception:
             logger.debug("Lotte detail failed for %s", cinema_id)
 
-        # Step 3: Get screens from today's schedule
+        # Step 3: Get screens from multi-day schedule scan
+        seen_screens: set[str] = set()
         screens: list[Screen] = []
-        try:
-            composite_id = f"{division_code}|{sort_seq}|{cinema_id}"
-            sched = _lotte_api(
-                LOTTE_TICKETING_URL,
-                MethodName="GetPlaySequence",
-                playDate=today,
-                cinemaID=composite_id,
-                representationMovieCode="",
-            )
+        composite_id = f"{division_code}|{sort_seq}|{cinema_id}"
 
-            seen_screens: set[str] = set()
-            for entry in sched.get("PlaySeqs", {}).get("Items", []):
-                screen_id_val = str(entry.get("ScreenID", ""))
-                screen_name = entry.get("ScreenNameKR", "")
-                screen_div = str(entry.get("ScreenDivisionCode", "100"))
-                seat_count = int(entry.get("TotalSeatCount", 0) or 0)
-
-                screen_key = f"{screen_div}_{screen_name}"
-                if screen_key in seen_screens:
-                    continue
-                seen_screens.add(screen_key)
-
-                screen_type = LOTTE_SCREEN_TYPE_MAP.get(
-                    screen_div, SCREEN_TYPE_NORMAL,
+        for scan_date in scan_dates:
+            try:
+                sched = _lotte_api(
+                    LOTTE_TICKETING_URL,
+                    MethodName="GetPlaySequence",
+                    playDate=scan_date,
+                    cinemaID=composite_id,
+                    representationMovieCode="",
                 )
-                screens.append(Screen(
-                    screen_id=screen_key,
-                    name=screen_name,
-                    screen_type=screen_type,
-                    seat_count=seat_count,
-                    is_special=screen_type in SPECIAL_TYPES,
-                ))
-        except Exception:
-            logger.debug("Lotte schedule failed for %s", cinema_id)
+
+                for entry in sched.get("PlaySeqs", {}).get("Items", []):
+                    screen_id_val = str(entry.get("ScreenID", ""))
+                    screen_name = entry.get("ScreenNameKR", "")
+                    screen_div = str(entry.get("ScreenDivisionCode", "100"))
+                    seat_count = int(entry.get("TotalSeatCount", 0) or 0)
+
+                    screen_key = f"{screen_div}_{screen_name}"
+                    if screen_key in seen_screens:
+                        continue
+                    seen_screens.add(screen_key)
+
+                    screen_type = LOTTE_SCREEN_TYPE_MAP.get(
+                        screen_div, SCREEN_TYPE_NORMAL,
+                    )
+                    screens.append(Screen(
+                        screen_id=screen_key,
+                        name=screen_name,
+                        screen_type=screen_type,
+                        seat_count=seat_count,
+                        is_special=screen_type in SPECIAL_TYPES,
+                    ))
+            except Exception:
+                logger.debug("Lotte schedule failed for %s on %s", cinema_id, scan_date)
 
         theaters.append(Theater(
             chain="lotte",
@@ -419,9 +443,12 @@ def sync_megabox() -> list[Theater]:
     """Fetch all MegaBox theaters with individual halls.
 
     Step 1: Scrape the full theater list from the HTML page (117+ theaters).
-    Step 2: For each branch, fetch schedule to get individual halls + details.
+    Step 2: For each branch, fetch schedule across multiple days to discover
+            all halls (some halls may be idle on any given day).
     """
-    today = datetime.now().strftime("%Y%m%d")
+    from html import unescape as _unescape
+
+    scan_dates = _scan_dates()
     session = requests.Session()
     session.headers.update({
         "User-Agent": _UA,
@@ -437,54 +464,54 @@ def sync_megabox() -> list[Theater]:
 
     theaters: list[Theater] = []
 
-    # Step 2: Fetch per-branch schedule + details
+    # Step 2: Fetch per-branch schedule + details (multi-day scan)
     for brch_no, brch_name in all_branches.items():
         address, lat, lon = "", 0.0, 0.0
+        seen: set[str] = set()
         screens: list[Screen] = []
 
-        try:
-            resp = session.post(
-                MEGABOX_URL,
-                data={
-                    "masterType": "brch",
-                    "brchNo": brch_no,
-                    "brchNo1": brch_no,
-                    "playDe": today,
-                    "firstAt": "Y",
-                },
-                timeout=10,
-            )
-            mega = resp.json().get("megaMap", {})
-
-            from html import unescape as _unescape
-
-            # Branch info (address, coordinates)
-            info = mega.get("brchInfo", {})
-            address = _unescape(info.get("roadNmAddr", "") or "")
-            lat = float(info.get("brchLat", 0) or 0)
-            lon = float(info.get("brchLon", 0) or 0)
-
-            # Individual halls from schedule
-            seen: set[str] = set()
-            for item in mega.get("movieFormList", []):
-                theab_no = str(item.get("theabNo", ""))
-                if theab_no in seen:
-                    continue
-                seen.add(theab_no)
-
-                kind_cd = item.get("theabKindCd", "NOR")
-                screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
-                    kind_cd, SCREEN_TYPE_NORMAL,
+        for scan_date in scan_dates:
+            try:
+                resp = session.post(
+                    MEGABOX_URL,
+                    data={
+                        "masterType": "brch",
+                        "brchNo": brch_no,
+                        "brchNo1": brch_no,
+                        "playDe": scan_date,
+                        "firstAt": "Y",
+                    },
+                    timeout=10,
                 )
-                screens.append(Screen(
-                    screen_id=theab_no,
-                    name=_unescape(item.get("theabExpoNm", "")),
-                    screen_type=screen_type,
-                    seat_count=int(item.get("totSeatCnt", 0) or 0),
-                    is_special=screen_type in SPECIAL_TYPES,
-                ))
-        except Exception:
-            logger.debug("MegaBox fetch failed for %s", brch_no)
+                mega = resp.json().get("megaMap", {})
+
+                # Branch info (only grab once)
+                if not address:
+                    info = mega.get("brchInfo", {})
+                    address = _unescape(info.get("roadNmAddr", "") or "")
+                    lat = float(info.get("brchLat", 0) or 0)
+                    lon = float(info.get("brchLon", 0) or 0)
+
+                # Individual halls from schedule
+                for item in mega.get("movieFormList", []):
+                    theab_no = str(item.get("theabNo", ""))
+                    if theab_no in seen:
+                        continue
+                    seen.add(theab_no)
+
+                    kind_cd = item.get("theabKindCd", "NOR")
+                    screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
+                        kind_cd, SCREEN_TYPE_NORMAL,
+                    )
+                    screens.append(Screen(
+                        screen_id=theab_no,
+                        name=_unescape(item.get("theabExpoNm", "")),
+                        screen_type=screen_type,
+                        seat_count=int(item.get("totSeatCnt", 0) or 0),
+                        is_special=screen_type in SPECIAL_TYPES,
+                    ))
+            except Exception:
+                logger.debug("MegaBox fetch failed for %s on %s", brch_no, scan_date)
 
         theaters.append(Theater(
             chain="megabox",
