@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path("data/theaters.db")
 SEED_PATH = Path("seed/theaters.db")
 
+# Minimum percentage of theaters that must have screen data per chain.
+# If a chain falls below this threshold, the sync is considered failed.
+_MIN_SCREEN_RATE = 0.5  # 50%
+
 
 def main() -> None:
     logger.info("Starting theater sync...")
@@ -38,7 +42,6 @@ def main() -> None:
     total_screens = sum(len(t.screens) for t in db.theaters)
     last_sync = db.last_sync_at
     now_playing_movies = db.get_now_playing_movies()
-    db.close()
 
     logger.info(
         "Sync complete: %d theaters, %d screens, %d now-playing movies (sync_at=%s)",
@@ -50,6 +53,38 @@ def main() -> None:
 
     if total_theaters == 0:
         logger.error("Sync returned 0 theaters — aborting seed update")
+        db.close()
+        sys.exit(1)
+
+    # Per-chain health check
+    chain_stats: dict[str, dict] = {}
+    for t in db.theaters:
+        stats = chain_stats.setdefault(t.chain, {"total": 0, "with_screens": 0})
+        stats["total"] += 1
+        if t.screens:
+            stats["with_screens"] += 1
+
+    db.close()
+
+    failed_chains: list[str] = []
+    for chain, stats in sorted(chain_stats.items()):
+        total = stats["total"]
+        with_screens = stats["with_screens"]
+        rate = with_screens / total if total else 0
+        status = "OK" if rate >= _MIN_SCREEN_RATE else "FAIL"
+        logger.info(
+            "  %s: %d/%d theaters with screens (%.0f%%) — %s",
+            chain, with_screens, total, rate * 100, status,
+        )
+        if total > 0 and rate < _MIN_SCREEN_RATE:
+            failed_chains.append(chain)
+
+    if failed_chains:
+        logger.error(
+            "Sync FAILED — chains below %.0f%% screen rate: %s",
+            _MIN_SCREEN_RATE * 100,
+            ", ".join(failed_chains),
+        )
         sys.exit(1)
 
     # Copy the synced DB to seed location
