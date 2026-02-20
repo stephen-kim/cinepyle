@@ -137,35 +137,54 @@ def _cgv_ensure_session() -> requests.Session:
     return _cgv_session
 
 
-def _cgv_get(pathname: str, params: str = "") -> dict | list | None:
+def _cgv_get(pathname: str, params: str = "", *, _retries: int = 3) -> dict | list | None:
     """Make an authenticated GET request to the CGV API.
 
     ``pathname`` is e.g. "/cnm/site/searchRegnSiteList" (no query string).
     ``params`` is the query string without "?" e.g. "coCd=A420&regnGrpCd=01".
     HMAC signs only the pathname — the query string must NOT be included.
+    Retries up to ``_retries`` times with exponential backoff on failure.
     """
-    session = _cgv_ensure_session()
-    timestamp = str(int(time.time()))
-    message = f"{timestamp}|{pathname}|"
-    signature = base64.b64encode(
-        hmac.new(
-            CGV_HMAC_SECRET.encode(), message.encode(), hashlib.sha256,
-        ).digest()
-    ).decode()
-    url = f"{CGV_API_BASE}{pathname}"
-    if params:
-        url += f"?{params}"
-    headers = {
-        "X-TIMESTAMP": timestamp,
-        "X-SIGNATURE": signature,
-        "Origin": CGV_WEB_BASE,
-        "Referer": f"{CGV_WEB_BASE}/",
-    }
-    resp = session.get(url, headers=headers, timeout=15)
-    if resp.status_code != 200:
-        logger.debug("CGV GET %s → %s", pathname, resp.status_code)
-        return None
-    return resp.json()
+    for attempt in range(_retries):
+        try:
+            session = _cgv_ensure_session()
+            timestamp = str(int(time.time()))
+            message = f"{timestamp}|{pathname}|"
+            signature = base64.b64encode(
+                hmac.new(
+                    CGV_HMAC_SECRET.encode(), message.encode(), hashlib.sha256,
+                ).digest()
+            ).decode()
+            url = f"{CGV_API_BASE}{pathname}"
+            if params:
+                url += f"?{params}"
+            headers = {
+                "X-TIMESTAMP": timestamp,
+                "X-SIGNATURE": signature,
+                "Origin": CGV_WEB_BASE,
+                "Referer": f"{CGV_WEB_BASE}/",
+            }
+            resp = session.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code == 403:
+                # Cloudflare block — reset session and retry
+                global _cgv_session
+                _cgv_session = None
+                logger.warning(
+                    "CGV GET %s → 403 (attempt %d/%d, refreshing session)",
+                    pathname, attempt + 1, _retries,
+                )
+                time.sleep(2 ** attempt)
+                continue
+            logger.warning("CGV GET %s → %s", pathname, resp.status_code)
+            return None
+        except Exception:
+            if attempt < _retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+    return None
 
 
 def _classify_cgv_screen(grade_name: str, screen_name: str) -> str:
@@ -274,7 +293,8 @@ def sync_cgv() -> list[Theater]:
                         is_special=screen_type in SPECIAL_TYPES,
                     ))
             except Exception:
-                logger.debug("CGV schedule fetch failed for %s on %s", site_no, scan_date)
+                logger.warning("CGV schedule fetch failed for %s on %s", site_no, scan_date)
+            time.sleep(0.1)  # Rate limit: 100ms between requests
 
         # Fallback: if schedule returned no screens, use rcmGradList
         if not screens:
@@ -307,7 +327,13 @@ def sync_cgv() -> list[Theater]:
             screens=screens,
         ))
 
-    logger.info("CGV sync: %d theaters", len(theaters))
+    no_screens = sum(1 for t in theaters if not t.screens)
+    logger.info("CGV sync: %d theaters (%d without screens)", len(theaters), no_screens)
+    if no_screens:
+        logger.warning(
+            "CGV theaters without screens: %s",
+            ", ".join(t.name for t in theaters if not t.screens)[:500],
+        )
     return theaters
 
 
