@@ -94,6 +94,25 @@ async def message_handler(
     if not user_text:
         return
 
+    # Check for pending movie selection (user picks a number)
+    pending = context.user_data.get("pending_movie_selection")
+    if pending and user_text.strip().isdigit():
+        idx = int(user_text.strip())
+        if 1 <= idx <= len(pending):
+            selected = pending[idx - 1]
+            context.user_data.pop("pending_movie_selection", None)
+            await _do_movie_info(
+                update,
+                {"movie": selected["name"], "_movie_code": selected["code"]},
+                context,
+            )
+            return
+        else:
+            context.user_data.pop("pending_movie_selection", None)
+
+    # Clear stale pending selection when user sends non-number text
+    context.user_data.pop("pending_movie_selection", None)
+
     # Load conversation history for follow-up recognition (last 5 turns)
     history: list[dict] = context.user_data.get("chat_history", [])
 
@@ -168,7 +187,7 @@ async def message_handler(
 
     elif result.intent == Intent.MOVIE_INFO:
         await update.message.reply_text(result.reply)
-        await _do_movie_info(update, result.params)
+        await _do_movie_info(update, result.params, context)
 
     elif result.intent == Intent.PREFERENCE:
         await _do_preference(update, result)
@@ -1220,7 +1239,7 @@ async def _do_seat_map(update: Update, params: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _do_movie_info(update: Update, params: dict) -> None:
+async def _do_movie_info(update: Update, params: dict, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     """Search movie and display detailed info from KOFIC."""
     from cinepyle.scrapers.kofic import fetch_movie_info, search_movie_by_name
 
@@ -1238,6 +1257,12 @@ async def _do_movie_info(update: Update, params: dict) -> None:
         )
         return
 
+    # If a specific movie code is passed (from selection), use it directly
+    movie_code = params.get("_movie_code")
+    if movie_code:
+        await _show_movie_detail(update, movie_code, movie_name)
+        return
+
     try:
         matches = search_movie_by_name(KOBIS_API_KEY, movie_name)
     except Exception:
@@ -1253,20 +1278,67 @@ async def _do_movie_info(update: Update, params: dict) -> None:
         )
         return
 
-    # Fetch detail for best match
-    top = matches[0]
+    # Exact title match → show directly
+    exact = [m for m in matches if m["name"] == movie_name]
+    if len(exact) == 1:
+        await _show_movie_detail(update, exact[0]["code"], movie_name)
+        return
+
+    # Only one result → show directly
+    if len(matches) == 1:
+        await _show_movie_detail(update, matches[0]["code"], movie_name)
+        return
+
+    # Multiple results — deduplicate by title (keep most recent per title)
+    seen_titles: dict[str, dict] = {}
+    unique_matches: list[dict] = []
+    for m in matches:
+        key = m["name"]
+        if key not in seen_titles:
+            seen_titles[key] = m
+            unique_matches.append(m)
+
+    # After dedup, if only one unique title → show directly
+    if len(unique_matches) == 1:
+        await _show_movie_detail(update, unique_matches[0]["code"], movie_name)
+        return
+
+    # Show selection list (max 5)
+    candidates = unique_matches[:5]
+    lines = [f'🔍 "{movie_name}" 검색 결과가 여러 개예요. 번호로 선택해주세요!\n']
+    for i, m in enumerate(candidates, 1):
+        year = m.get("open_date", "")[:4] or "미정"
+        director = m.get("directors", "") or "감독 미상"
+        genre = m.get("genre", "")
+        label = f"{i}. {m['name']} ({year})"
+        if director and director != "감독 미상":
+            label += f" — {director}"
+        if genre:
+            label += f" [{genre}]"
+        lines.append(label)
+
+    lines.append("\n번호를 입력하면 상세 정보를 보여드릴게요.")
+
+    # Store candidates in user_data for selection
+    if context is not None:
+        context.user_data["pending_movie_selection"] = candidates
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def _show_movie_detail(update: Update, movie_code: str, movie_name: str) -> None:
+    """Fetch and display detailed movie info for a specific KOFIC movie code."""
+    from cinepyle.scrapers.kofic import fetch_movie_info
+
     try:
-        info = fetch_movie_info(KOBIS_API_KEY, top["code"])
+        info = fetch_movie_info(KOBIS_API_KEY, movie_code)
     except Exception:
         logger.exception("KOFIC movie info failed")
         info = None
 
     if not info:
-        # Fallback: show basic search result
         await update.message.reply_text(
-            f"🎬 {top['name']}\n"
-            f"개봉일: {top.get('open_date', '미정')}\n"
-            f"장르: {top.get('genre', '정보 없음')}"
+            "영화 상세 정보를 가져오지 못했습니다. 잠시 후 다시 시도해주세요."
         )
         return
 

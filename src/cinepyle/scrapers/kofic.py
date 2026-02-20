@@ -71,6 +71,9 @@ def search_movie_by_name(api_key: str, movie_name: str) -> list[dict]:
         genres = ", ".join(
             g.get("genreNm", "") for g in entry.get("genres", [])
         )
+        directors = ", ".join(
+            d.get("peopleNm", "") for d in entry.get("directors", []) if d.get("peopleNm")
+        )
         movies.append(
             {
                 "code": entry.get("movieCd"),
@@ -78,6 +81,7 @@ def search_movie_by_name(api_key: str, movie_name: str) -> list[dict]:
                 "name_en": entry.get("movieNmEn", ""),
                 "open_date": entry.get("openDt", ""),
                 "genre": genres,
+                "directors": directors,
             }
         )
 

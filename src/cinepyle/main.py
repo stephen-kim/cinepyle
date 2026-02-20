@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 from cinepyle.config import DASHBOARD_PORT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from cinepyle.bot.handlers import location_handler, message_handler, start_command
@@ -43,7 +44,22 @@ def main() -> None:
     dashboard_thread.start()
     logger.info("Dashboard started on port %d", DASHBOARD_PORT)
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    request = HTTPXRequest(
+        connect_timeout=20.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=10.0,
+    )
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .request(request)
+        .connect_timeout(20.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(10.0)
+        .build()
+    )
 
     # /start for first-time users (Telegram sends this automatically)
     app.add_handler(CommandHandler("start", start_command))
@@ -166,7 +182,10 @@ def main() -> None:
     app.post_init = _send_startup_greeting
 
     logger.info("Bot starting...")
-    app.run_polling()
+    app.run_polling(
+        bootstrap_retries=5,
+        allowed_updates=["message"],
+    )
 
 
 if __name__ == "__main__":
