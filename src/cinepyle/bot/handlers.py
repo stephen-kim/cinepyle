@@ -960,8 +960,8 @@ async def _do_showtime(update: Update, params: dict) -> None:
             )
             return
 
-    # Limit theaters (nationwide uses all matched; regional caps at 10)
-    if not is_nationwide:
+    # Limit theaters only when no movie filter (broad schedule fetch is slow)
+    if not is_nationwide and not movie_filter:
         matched = matched[:10]
 
     if is_nationwide:
