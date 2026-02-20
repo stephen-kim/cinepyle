@@ -31,7 +31,7 @@ SEED_PATH = Path("seed/theaters.db")
 
 # Minimum percentage of theaters that must have screen data per chain.
 # If a chain falls below this threshold, the sync is considered failed.
-_MIN_SCREEN_RATE = 0.5  # 50%
+_MIN_SCREEN_RATE = 0.9  # 90%
 
 
 def main() -> None:
