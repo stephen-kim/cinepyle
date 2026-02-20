@@ -579,7 +579,7 @@ def sync_indie_cineq() -> list[Theater]:
 # =========================================================================
 
 
-_NOW_PLAYING_DAYS = 7  # Fetch this many days of schedule data
+_NOW_PLAYING_DAYS = 14  # Fetch this many days of schedule data
 
 
 def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
