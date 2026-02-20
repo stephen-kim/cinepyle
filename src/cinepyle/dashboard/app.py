@@ -22,8 +22,14 @@ _templates_dir = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 
 # Serve static assets (icon, favicon, etc.)
-_asset_dir = Path(__file__).resolve().parent.parent.parent.parent / "asset"
-if _asset_dir.is_dir():
+# Try multiple candidate paths: source tree layout, Docker /app, and CWD
+_asset_candidates = [
+    Path(__file__).resolve().parent.parent.parent.parent / "asset",  # src layout
+    Path("/app/asset"),  # Docker
+    Path.cwd() / "asset",  # CWD fallback
+]
+_asset_dir = next((p for p in _asset_candidates if p.is_dir()), None)
+if _asset_dir:
     app.mount("/asset", StaticFiles(directory=str(_asset_dir)), name="asset")
 
 # Reference to the bot's job_queue, set by main.py at startup
