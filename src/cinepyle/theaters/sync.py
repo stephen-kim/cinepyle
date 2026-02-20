@@ -294,7 +294,7 @@ def sync_cgv() -> list[Theater]:
                     ))
             except Exception:
                 logger.warning("CGV schedule fetch failed for %s on %s", site_no, scan_date)
-            time.sleep(0.1)  # Rate limit: 100ms between requests
+            time.sleep(1)  # Rate limit: 1s between requests
 
         # Fallback: if schedule returned no screens, use rcmGradList
         if not screens:
