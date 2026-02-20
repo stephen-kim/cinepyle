@@ -804,7 +804,7 @@ _NOISE_WORDS = {
 }
 
 # Keywords meaning "all theaters nationwide"
-_NATIONWIDE_WORDS = {"전국", "전체", "아무데나", "어디든", "전부"}
+_NATIONWIDE_WORDS = {"전국", "전체", "아무데나", "어디든", "전부", "우리나라", "한국"}
 
 
 def _find_theaters_for_showtime(db, region: str, theater_query: str):
@@ -917,17 +917,48 @@ async def _do_showtime(update: Update, params: dict) -> None:
         db.close()
 
     if not matched:
-        if not region and not theater_query:
+        # No region/theater and movie given → treat as nationwide search
+        if not region and not theater_query and movie_filter:
+            db = TheaterDatabase.load()
+            try:
+                all_movie_names = db.get_now_playing_movies()
+                if all_movie_names:
+                    matched_movies = _match_movie_title(movie_filter, all_movie_names)
+                    if matched_movies:
+                        seen_keys: set[tuple[str, str]] = set()
+                        for movie in matched_movies:
+                            for np in db.find_theaters_playing(movie):
+                                key = (np.chain, np.theater_code)
+                                if key not in seen_keys:
+                                    seen_keys.add(key)
+                                    t = db.get(np.chain, np.theater_code)
+                                    if t:
+                                        matched.append(t)
+                        is_nationwide = True
+                    if not matched:
+                        await update.message.reply_text(
+                            f"'{movie_filter}' 현재 상영 중인 극장을 찾을 수 없습니다."
+                        )
+                        return
+                else:
+                    await update.message.reply_text(
+                        "상영 데이터가 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요."
+                    )
+                    return
+            finally:
+                db.close()
+        elif not region and not theater_query:
             await update.message.reply_text(
                 "어느 극장에서 보려고 해? 지역이나 극장 이름을 알려줘!\n"
                 "(예: 강남, CGV용산, 목동 롯데시네마)"
             )
+            return
         else:
             await update.message.reply_text(
                 f'"{region or theater_query}" 지역/극장을 찾을 수 없습니다.\n'
                 "극장 이름이나 지역을 다시 확인해주세요."
             )
-        return
+            return
 
     # Limit theaters (nationwide uses all matched; regional caps at 10)
     if not is_nationwide:
