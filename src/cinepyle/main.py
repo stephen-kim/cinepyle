@@ -54,10 +54,6 @@ def main() -> None:
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .request(request)
-        .connect_timeout(20.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(10.0)
         .build()
     )
 
