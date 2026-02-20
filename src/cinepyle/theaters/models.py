@@ -180,10 +180,11 @@ class Screen(Base):
 
 
 class NowPlaying(Base):
-    """Movie showtime at a specific theater (populated during daily sync)."""
+    """Movie showtime at a specific theater (populated during sync)."""
 
     __tablename__ = "now_playing"
 
+    play_date: Mapped[str] = mapped_column(String, primary_key=True)  # "YYYY-MM-DD"
     chain: Mapped[str] = mapped_column(String, primary_key=True)
     theater_code: Mapped[str] = mapped_column(String, primary_key=True)
     movie_name: Mapped[str] = mapped_column(String, primary_key=True)
@@ -257,14 +258,24 @@ class TheaterDatabase:
 
     # -- now_playing API ---------------------------------------------------
 
-    def get_now_playing_movies(self) -> set[str]:
-        """Return set of all distinct movie names currently playing."""
+    def get_now_playing_movies(self, play_date: str = "") -> set[str]:
+        """Return set of all distinct movie names playing on a date.
+
+        If *play_date* is empty, returns movies across all stored dates.
+        """
         stmt = select(NowPlaying.movie_name).distinct()
+        if play_date:
+            stmt = stmt.where(NowPlaying.play_date == play_date)
         return set(self._session.scalars(stmt))
 
-    def find_theaters_playing(self, movie_name: str) -> list[NowPlaying]:
-        """Find all now_playing entries for a given movie name."""
+    def find_theaters_playing(self, movie_name: str, play_date: str = "") -> list[NowPlaying]:
+        """Find all now_playing entries for a given movie name.
+
+        If *play_date* is given, only return entries for that date.
+        """
         stmt = select(NowPlaying).where(NowPlaying.movie_name == movie_name)
+        if play_date:
+            stmt = stmt.where(NowPlaying.play_date == play_date)
         return list(self._session.scalars(stmt))
 
     def replace_now_playing(self, entries: list[NowPlaying]) -> None:
@@ -376,6 +387,22 @@ class TheaterDatabase:
                 conn.commit()
                 logger.info("Migrated theaters table: added region column")
 
+        # Migrate: add 'play_date' column to now_playing
+        # SQLite doesn't support adding to PK, so recreate the table
+        import sqlalchemy as _sa
+
+        with engine.connect() as conn:
+            try:
+                cols = conn.execute(_sa.text("PRAGMA table_info(now_playing)")).fetchall()
+                col_names = {c[1] for c in cols}
+                if cols and "play_date" not in col_names:
+                    conn.execute(_sa.text("DROP TABLE now_playing"))
+                    conn.commit()
+                    logger.info("Dropped legacy now_playing table (missing play_date)")
+                    Base.metadata.tables["now_playing"].create(engine)
+            except Exception:
+                pass
+
         session = sessionmaker(bind=engine)()
 
         db = cls(session)
@@ -451,13 +478,24 @@ class TheaterDatabase:
                 "SELECT chain, theater_code, screen_id, name, "
                 "screen_type, seat_count, is_special FROM screens"
             ).fetchall()
-            # now_playing may not exist in older seeds
+            # now_playing may not exist in older seeds / may lack play_date
             try:
-                seed_now_playing = seed_conn.execute(
-                    "SELECT chain, theater_code, movie_name, "
-                    "screen_name, start_time, screen_type, synced_at "
-                    "FROM now_playing"
-                ).fetchall()
+                # Check if play_date column exists
+                cols = seed_conn.execute("PRAGMA table_info(now_playing)").fetchall()
+                col_names = {c["name"] for c in cols}
+                if "play_date" in col_names:
+                    seed_now_playing = seed_conn.execute(
+                        "SELECT play_date, chain, theater_code, movie_name, "
+                        "screen_name, start_time, screen_type, synced_at "
+                        "FROM now_playing"
+                    ).fetchall()
+                else:
+                    # Legacy seed without play_date — inject today's date
+                    seed_now_playing = seed_conn.execute(
+                        "SELECT chain, theater_code, movie_name, "
+                        "screen_name, start_time, screen_type, synced_at "
+                        "FROM now_playing"
+                    ).fetchall()
             except Exception:
                 seed_now_playing = []
         finally:
@@ -502,10 +540,15 @@ class TheaterDatabase:
 
         # Merge now_playing data from seed
         if seed_now_playing:
+            from datetime import date as _date
+
+            today_str = _date.today().strftime("%Y-%m-%d")
             self._session.execute(delete(NowPlaying))
             self._session.flush()
             for row in seed_now_playing:
+                play_date = row["play_date"] if "play_date" in row.keys() else today_str
                 self._session.add(NowPlaying(
+                    play_date=play_date,
                     chain=row["chain"],
                     theater_code=row["theater_code"],
                     movie_name=row["movie_name"],

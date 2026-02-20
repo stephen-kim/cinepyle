@@ -579,12 +579,17 @@ def sync_indie_cineq() -> list[Theater]:
 # =========================================================================
 
 
-def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
-    """Fetch today's schedule for all theaters and collect showtimes.
+_NOW_PLAYING_DAYS = 7  # Fetch this many days of schedule data
 
-    Uses ThreadPoolExecutor for parallel fetching (reusing schedule.py fetchers).
-    Returns a list of NowPlaying entries (movie + screen + time per theater).
+
+def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
+    """Fetch multi-day schedules for all theaters and collect showtimes.
+
+    Fetches today + next ``_NOW_PLAYING_DAYS - 1`` days in parallel.
+    Returns a list of NowPlaying entries with ``play_date`` set.
     """
+    from datetime import date as _date
+
     from cinepyle.theaters.schedule import fetch_schedules_for_theaters
 
     # Only theaters with screens and from supported chains
@@ -598,32 +603,41 @@ def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
     if not theaters_input:
         return []
 
-    logger.info("Collecting now_playing for %d theaters...", len(theaters_input))
-    schedules = fetch_schedules_for_theaters(theaters_input, target_date=None)
+    today = _date.today()
+    dates = [today + _timedelta(days=d) for d in range(_NOW_PLAYING_DAYS)]
 
     synced_at = datetime.now(timezone.utc).isoformat()
-    seen: set[tuple[str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     entries: list[NowPlaying] = []
 
-    for sched in schedules:
-        for screening in sched.screenings:
-            key = (
-                sched.chain, sched.theater_code,
-                screening.movie_name, screening.screen_name,
-                screening.start_time,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            entries.append(NowPlaying(
-                chain=sched.chain,
-                theater_code=sched.theater_code,
-                movie_name=screening.movie_name,
-                screen_name=screening.screen_name,
-                start_time=screening.start_time,
-                screen_type=screening.screen_type,
-                synced_at=synced_at,
-            ))
+    for target_date in dates:
+        date_str = target_date.strftime("%Y-%m-%d")
+        logger.info(
+            "Collecting now_playing for %d theaters on %s...",
+            len(theaters_input), date_str,
+        )
+        schedules = fetch_schedules_for_theaters(theaters_input, target_date)
+
+        for sched in schedules:
+            for screening in sched.screenings:
+                key = (
+                    date_str, sched.chain, sched.theater_code,
+                    screening.movie_name, screening.screen_name,
+                    screening.start_time,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(NowPlaying(
+                    play_date=date_str,
+                    chain=sched.chain,
+                    theater_code=sched.theater_code,
+                    movie_name=screening.movie_name,
+                    screen_name=screening.screen_name,
+                    start_time=screening.start_time,
+                    screen_type=screening.screen_type,
+                    synced_at=synced_at,
+                ))
 
     return entries
 

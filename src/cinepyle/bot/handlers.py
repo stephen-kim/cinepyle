@@ -873,11 +873,12 @@ async def _do_showtime(update: Update, params: dict) -> None:
         region = theater_query
 
     # Find theaters
+    play_date_str = target_date.strftime("%Y-%m-%d")
     db = TheaterDatabase.load()
     try:
         if is_nationwide:
             # Use now_playing DB for fast lookup
-            all_movie_names = db.get_now_playing_movies()
+            all_movie_names = db.get_now_playing_movies(play_date_str)
 
             if all_movie_names:
                 matched_movies = _match_movie_title(movie_filter, all_movie_names)
@@ -886,7 +887,7 @@ async def _do_showtime(update: Update, params: dict) -> None:
                     seen_keys: set[tuple[str, str]] = set()
                     matched = []
                     for movie in matched_movies:
-                        for np in db.find_theaters_playing(movie):
+                        for np in db.find_theaters_playing(movie, play_date_str):
                             key = (np.chain, np.theater_code)
                             if key not in seen_keys:
                                 seen_keys.add(key)
@@ -921,13 +922,13 @@ async def _do_showtime(update: Update, params: dict) -> None:
         if not region and not theater_query and movie_filter:
             db = TheaterDatabase.load()
             try:
-                all_movie_names = db.get_now_playing_movies()
+                all_movie_names = db.get_now_playing_movies(play_date_str)
                 if all_movie_names:
                     matched_movies = _match_movie_title(movie_filter, all_movie_names)
                     if matched_movies:
                         seen_keys: set[tuple[str, str]] = set()
                         for movie in matched_movies:
-                            for np in db.find_theaters_playing(movie):
+                            for np in db.find_theaters_playing(movie, play_date_str):
                                 key = (np.chain, np.theater_code)
                                 if key not in seen_keys:
                                     seen_keys.add(key)
