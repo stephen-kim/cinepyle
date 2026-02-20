@@ -30,6 +30,51 @@ from cinepyle.theaters.finder import find_nearest_theaters
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Watcha client singleton (shared across handlers)
+# ---------------------------------------------------------------------------
+_watcha_client = None
+
+
+def _get_watcha_client():
+    """Return a shared WatchaClient instance (no login required)."""
+    global _watcha_client
+    if _watcha_client is None:
+        from cinepyle.scrapers.watcha import WatchaClient
+        _watcha_client = WatchaClient()
+    return _watcha_client
+
+
+def _watcha_rating(movie_name: str) -> float | None:
+    """Get Watcha expected rating for a movie, or None on failure."""
+    client = _get_watcha_client()
+    if client is None:
+        return None
+    try:
+        return client.get_expected_rating(movie_name)
+    except Exception:
+        logger.debug("Watcha rating lookup failed for %s", movie_name)
+        return None
+
+
+async def _watcha_ratings_bulk(names: list[str]) -> dict[str, float | None]:
+    """Fetch Watcha ratings for multiple movies concurrently via thread pool."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not _get_watcha_client():
+        return {}
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            name: loop.run_in_executor(pool, _watcha_rating, name)
+            for name in names
+        }
+        results = {}
+        for name, fut in futures.items():
+            results[name] = await fut
+    return results
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start (first-time user greeting)."""
@@ -169,7 +214,17 @@ async def _do_ranking(update: Update) -> None:
         )
         return
 
-    lines = [f"{m['rank']}. {m['name']}" for m in movies]
+    # Fetch Watcha ratings concurrently for all movies
+    names = [m["name"] for m in movies]
+    ratings = await _watcha_ratings_bulk(names)
+
+    lines = []
+    for m in movies:
+        line = f"{m['rank']}. {m['name']}"
+        watcha = ratings.get(m["name"])
+        if watcha is not None:
+            line += f" ⭐{watcha}"
+        lines.append(line)
     text = "🎬 일일 박스오피스 순위:\n\n" + "\n".join(lines)
     await update.message.reply_text(text)
 
@@ -401,8 +456,13 @@ async def _do_new_movies(update: Update) -> None:
     # Sort by open_date descending
     releases.sort(key=lambda m: m.get("open_date", ""), reverse=True)
 
+    # Fetch Watcha ratings concurrently for all releases
+    top_releases = releases[:15]
+    names = [m.get("name", "") for m in top_releases]
+    ratings = await _watcha_ratings_bulk(names)
+
     lines = ["🆕 최근 개봉 영화 (7일 이내):\n"]
-    for m in releases[:15]:
+    for m in top_releases:
         name = m.get("name", "")
         date = m.get("open_date", "")
         genre = m.get("genre", "")
@@ -411,6 +471,9 @@ async def _do_new_movies(update: Update) -> None:
             line += f" ({date})"
         if genre:
             line += f" — {genre}"
+        watcha = ratings.get(name)
+        if watcha is not None:
+            line += f" ⭐{watcha}"
         lines.append(line)
 
     if len(releases) > 15:
@@ -1234,6 +1297,11 @@ async def _do_movie_info(update: Update, params: dict) -> None:
         lines.append(f"🎭 출연: {', '.join(actor_parts)}")
     if info.get("nations"):
         lines.append(f"🌍 제작국: {', '.join(info['nations'])}")
+
+    # Watcha expected rating
+    watcha = _watcha_rating(info.get("title", movie_name))
+    if watcha is not None:
+        lines.append(f"⭐ Watcha 예상: {watcha}")
 
     await update.message.reply_text("\n".join(lines))
 

@@ -1,19 +1,16 @@
-"""Watcha Pedia expected rating scraper.
+"""Watcha Pedia average rating scraper.
 
-Watcha Pedia does not provide a public API for predicted ratings.
-This module logs in via the web interface and scrapes the expected
-rating (예상 별점) for a given movie title.
+Fetches average user ratings (평균 별점) from Watcha Pedia's public API.
+No login required — uses the search endpoint to find a movie code,
+then fetches the detail API for the average rating.
 """
 
 import logging
-import re
 
 import requests
-from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-WATCHA_BASE_URL = "https://pedia.watcha.com"
 WATCHA_API_URL = "https://api-pedia.watcha.com"
 
 WATCHA_HEADERS = {
@@ -30,109 +27,82 @@ WATCHA_HEADERS = {
 
 
 class WatchaClient:
-    """Watcha Pedia client that handles login and rating lookups."""
+    """Watcha Pedia client for rating lookups (no login required)."""
 
-    def __init__(self, email: str, password: str) -> None:
-        self.email = email
-        self.password = password
+    def __init__(self, email: str = "", password: str = "") -> None:
+        # email/password kept for backward compat but no longer used
         self.session = requests.Session()
         self.session.headers.update(WATCHA_HEADERS)
-        self._logged_in = False
 
     def login(self) -> bool:
-        """Log in to Watcha Pedia using email/password.
-
-        Returns True on success, False on failure.
-        """
-        try:
-            resp = self.session.post(
-                f"{WATCHA_API_URL}/api/auth",
-                json={"email": self.email, "password": self.password},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                self._logged_in = True
-                logger.info("Watcha Pedia login successful")
-                return True
-
-            logger.warning(
-                "Watcha Pedia login failed: %s %s",
-                resp.status_code,
-                resp.text[:200],
-            )
-            return False
-        except Exception:
-            logger.exception("Watcha Pedia login error")
-            return False
-
-    def _ensure_login(self) -> bool:
-        """Ensure we have an active session."""
-        if not self._logged_in:
-            return self.login()
+        """No-op for backward compatibility. Always returns True."""
         return True
 
     def get_expected_rating(self, movie_name: str) -> float | None:
-        """Search for a movie and return its expected rating (예상 별점).
+        """Search for a movie and return its average rating (평균 별점).
 
-        Returns the predicted rating as a float (e.g. 3.5), or None
-        if the movie is not found or the rating is unavailable.
+        Returns the average rating on a 5-point scale (e.g. 4.3),
+        or None if the movie is not found or the rating is unavailable.
         """
-        if not self._ensure_login():
-            return None
-
         try:
-            search_resp = self.session.get(
-                f"{WATCHA_API_URL}/api/searches",
-                params={"query": movie_name},
-                timeout=15,
-            )
-            if search_resp.status_code != 200:
-                logger.warning("Watcha search failed: %s", search_resp.status_code)
+            code = self._search_movie_code(movie_name)
+            if not code:
                 return None
-
-            data = search_resp.json()
-            results = data.get("result", {}).get("result", {}).get("body", [])
-            if not results:
-                return None
-
-            # Find the first movie result
-            for item in results:
-                content = item.get("content", {})
-                if content.get("content_type") == "movies":
-                    # The predicted rating may be in the response
-                    predicted = content.get("ratings_avg")
-                    if predicted:
-                        return round(float(predicted), 1)
-
-                    # Try fetching the detail page for the predicted rating
-                    code = content.get("code")
-                    if code:
-                        return self._fetch_detail_rating(code)
-
-            return None
+            return self._fetch_rating(code)
         except Exception:
             logger.exception("Failed to get Watcha rating for %s", movie_name)
             return None
 
-    def _fetch_detail_rating(self, content_code: str) -> float | None:
-        """Fetch the predicted rating from a movie's detail page."""
+    def _search_movie_code(self, movie_name: str) -> str | None:
+        """Search Watcha Pedia and return the content code for the best match."""
         try:
             resp = self.session.get(
-                f"{WATCHA_BASE_URL}/ko-KR/contents/{content_code}",
-                timeout=15,
+                f"{WATCHA_API_URL}/api/searches",
+                params={"query": movie_name},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning("Watcha search failed: %s", resp.status_code)
+                return None
+
+            data = resp.json()
+            result = data.get("result", {})
+
+            # Try top_results first (most relevant), then movies list
+            for source in [result.get("top_results", []), result.get("movies", [])]:
+                if not isinstance(source, list):
+                    continue
+                for item in source:
+                    if item.get("content_type") == "movies":
+                        return item.get("code")
+
+            return None
+        except Exception:
+            logger.exception("Watcha search error for %s", movie_name)
+            return None
+
+    def _fetch_rating(self, content_code: str) -> float | None:
+        """Fetch the average rating from the content detail API.
+
+        The API returns ratings_avg on a 10-point scale;
+        we convert to 5-point scale for display.
+        """
+        try:
+            resp = self.session.get(
+                f"{WATCHA_API_URL}/api/contents/{content_code}",
+                timeout=10,
             )
             if resp.status_code != 200:
                 return None
 
-            soup = BeautifulSoup(resp.text, "lxml")
-            # Look for the predicted/expected rating element
-            rating_el = soup.select_one("[class*='predicted'], [class*='expected']")
-            if rating_el:
-                match = re.search(r"(\d+\.?\d*)", rating_el.text)
-                if match:
-                    return round(float(match.group(1)), 1)
+            data = resp.json()
+            content = data.get("result", {})
+            ratings_avg = content.get("ratings_avg")
+            if ratings_avg is not None:
+                # Convert 10-point → 5-point scale
+                return round(float(ratings_avg) / 2, 1)
 
             return None
         except Exception:
-            logger.exception("Failed to fetch detail rating for %s", content_code)
+            logger.exception("Failed to fetch Watcha rating for %s", content_code)
             return None
