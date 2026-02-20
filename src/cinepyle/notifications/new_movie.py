@@ -84,14 +84,14 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         info = all_movies[code]
         name = info["name"]
 
-        # Try to get Watcha expected rating (skip if not configured)
-        rating = None
+        # Try to get Watcha rating (average + predicted)
+        watcha_display = ""
         if watcha is not None:
             try:
-                rating = watcha.get_expected_rating(name)
+                rating = watcha.get_rating(name)
+                watcha_display = rating.display
             except Exception:
                 logger.exception("Watcha rating lookup failed for %s", name)
-                rating = None
 
         # Build text
         text = f"🆕 새 영화: {name}"
@@ -99,8 +99,8 @@ async def check_new_movies_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             text += f" (박스오피스 {info['rank']}위)"
         if info.get("genre"):
             text += f"\n장르: {info['genre']}"
-        if rating is not None:
-            text += f"\n⭐ Watcha 예상 {rating}"
+        if watcha_display:
+            text += f"\n🍿 Watcha {watcha_display}"
 
         # Booking deeplinks per chain (updated for 2025+ URLs)
         encoded_name = quote(name)

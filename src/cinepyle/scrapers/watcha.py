@@ -1,11 +1,15 @@
-"""Watcha Pedia average rating scraper.
+"""Watcha Pedia rating scraper.
 
-Fetches average user ratings (평균 별점) from Watcha Pedia's public API.
-No login required — uses the search endpoint to find a movie code,
-then fetches the detail API for the average rating.
+Fetches movie ratings from Watcha Pedia:
+- Average rating (평균 별점) — public, no login required
+- Predicted rating (예상 별점) — personalized, requires login
+
+Uses the search endpoint to find a movie code, then fetches the
+detail API for ratings.
 """
 
 import logging
+from dataclasses import dataclass
 
 import requests
 
@@ -26,32 +30,95 @@ WATCHA_HEADERS = {
 }
 
 
+@dataclass
+class WatchaRating:
+    """Watcha Pedia rating data for a movie."""
+
+    average: float | None = None  # 평균 별점 (5-point scale)
+    predicted: float | None = None  # 예상 별점 (5-point scale, personalized)
+
+    @property
+    def display(self) -> str:
+        """Format for display: '⭐4.3 (예상 4.5)' or '⭐4.3'."""
+        parts = []
+        if self.average is not None:
+            parts.append(f"⭐{self.average}")
+        if self.predicted is not None:
+            parts.append(f"예상 {self.predicted}")
+        if not parts:
+            return ""
+        if self.average is not None and self.predicted is not None:
+            return f"⭐{self.average} (예상 {self.predicted})"
+        return parts[0]
+
+
 class WatchaClient:
-    """Watcha Pedia client for rating lookups (no login required)."""
+    """Watcha Pedia client for rating lookups.
+
+    If email/password provided, logs in for personalized predicted ratings.
+    Otherwise, returns average ratings only.
+    """
 
     def __init__(self, email: str = "", password: str = "") -> None:
-        # email/password kept for backward compat but no longer used
+        self.email = email
+        self.password = password
         self.session = requests.Session()
         self.session.headers.update(WATCHA_HEADERS)
+        self._logged_in = False
 
     def login(self) -> bool:
-        """No-op for backward compatibility. Always returns True."""
-        return True
+        """Log in to Watcha Pedia for personalized ratings."""
+        if not self.email or not self.password:
+            return False
+        try:
+            resp = self.session.post(
+                f"{WATCHA_API_URL}/api/sessions",
+                json={"email": self.email, "password": self.password},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                self._logged_in = True
+                logger.info("Watcha Pedia login successful")
+                return True
 
-    def get_expected_rating(self, movie_name: str) -> float | None:
-        """Search for a movie and return its average rating (평균 별점).
+            logger.warning(
+                "Watcha Pedia login failed: %s %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            return False
+        except Exception:
+            logger.exception("Watcha Pedia login error")
+            return False
 
-        Returns the average rating on a 5-point scale (e.g. 4.3),
-        or None if the movie is not found or the rating is unavailable.
+    def _ensure_login(self) -> None:
+        """Attempt login if credentials available and not yet logged in."""
+        if not self._logged_in and self.email and self.password:
+            self.login()
+
+    def get_rating(self, movie_name: str) -> WatchaRating:
+        """Search for a movie and return its ratings.
+
+        Returns a WatchaRating with average and (if logged in) predicted rating,
+        both on a 5-point scale.
         """
+        self._ensure_login()
         try:
             code = self._search_movie_code(movie_name)
             if not code:
-                return None
+                return WatchaRating()
             return self._fetch_rating(code)
         except Exception:
             logger.exception("Failed to get Watcha rating for %s", movie_name)
-            return None
+            return WatchaRating()
+
+    def get_expected_rating(self, movie_name: str) -> float | None:
+        """Backward-compatible method: returns best available rating.
+
+        Returns predicted rating if logged in, otherwise average rating.
+        """
+        rating = self.get_rating(movie_name)
+        return rating.predicted or rating.average
 
     def _search_movie_code(self, movie_name: str) -> str | None:
         """Search Watcha Pedia and return the content code for the best match."""
@@ -81,10 +148,10 @@ class WatchaClient:
             logger.exception("Watcha search error for %s", movie_name)
             return None
 
-    def _fetch_rating(self, content_code: str) -> float | None:
-        """Fetch the average rating from the content detail API.
+    def _fetch_rating(self, content_code: str) -> WatchaRating:
+        """Fetch ratings from the content detail API.
 
-        The API returns ratings_avg on a 10-point scale;
+        The API returns ratings on a 10-point scale;
         we convert to 5-point scale for display.
         """
         try:
@@ -93,16 +160,24 @@ class WatchaClient:
                 timeout=10,
             )
             if resp.status_code != 200:
-                return None
+                return WatchaRating()
 
             data = resp.json()
             content = data.get("result", {})
-            ratings_avg = content.get("ratings_avg")
-            if ratings_avg is not None:
-                # Convert 10-point → 5-point scale
-                return round(float(ratings_avg) / 2, 1)
 
-            return None
+            # Average rating (public)
+            avg_raw = content.get("ratings_avg")
+            average = round(float(avg_raw) / 2, 1) if avg_raw else None
+
+            # Predicted rating (personalized, requires login)
+            predicted = None
+            ctx = content.get("current_context", {})
+            if ctx:
+                pred_raw = ctx.get("predicted_rating")
+                if pred_raw is not None:
+                    predicted = round(float(pred_raw) / 2, 1)
+
+            return WatchaRating(average=average, predicted=predicted)
         except Exception:
             logger.exception("Failed to fetch Watcha rating for %s", content_code)
-            return None
+            return WatchaRating()
