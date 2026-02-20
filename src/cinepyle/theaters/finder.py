@@ -63,6 +63,7 @@ def find_nearest_theaters(
                     dist,
                     {
                         "TheaterName": t.name,
+                        "TheaterCode": t.theater_code,
                         "Latitude": t.latitude,
                         "Longitude": t.longitude,
                         "Chain": t.chain,

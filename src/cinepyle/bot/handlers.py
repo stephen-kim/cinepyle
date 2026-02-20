@@ -138,6 +138,18 @@ async def message_handler(
                     for k, v in kw_result.params.items():
                         if v and not result.params.get(k):
                             result.params[k] = v
+            # LLM may classify "근처에 OO 하는 곳" as SHOWTIME instead of NEARBY;
+            # if nearby keywords are present, override to NEARBY
+            elif result.intent == Intent.SHOWTIME:
+                _nearby_words = ("근처", "가까운", "주변")
+                if any(w in user_text for w in _nearby_words):
+                    kw_result = classify_intent_fallback(user_text)
+                    if kw_result.intent == Intent.NEARBY:
+                        # Keep LLM-extracted movie/time params, merge into nearby
+                        kw_result.params["movie"] = result.params.get("movie", "")
+                        kw_result.params["time"] = result.params.get("time", "")
+                        kw_result.params["date"] = result.params.get("date", "")
+                        result = kw_result
         except Exception:
             logger.exception("LLM classification failed, using keyword fallback")
             result = classify_intent_fallback(user_text)
@@ -251,18 +263,24 @@ async def _do_nearby(
 ) -> None:
     """Find nearby theaters — via GPS location or text-based region search.
 
-    Stores ``chain_filter`` in user_data so the subsequent location_handler
-    can filter by chain (e.g. "근처 메가박스").
+    Stores ``chain_filter``, ``movie``, ``time``, ``date`` in user_data
+    so the subsequent location_handler can filter results accordingly.
     """
     chain = result.params.get("chain", "")
     region = result.params.get("region", "")
+    movie = result.params.get("movie", "")
+    time_str = result.params.get("time", "")
+    date_str = result.params.get("date", "")
 
-    # Store chain filter for location_handler
+    # Store context for location_handler
     context.user_data["nearby_chain_filter"] = chain
+    context.user_data["nearby_movie_filter"] = movie
+    context.user_data["nearby_time_filter"] = time_str
+    context.user_data["nearby_date_filter"] = date_str
 
     # If a region/address was provided, search by text immediately
     if region:
-        await _search_nearby_by_text(update, region, chain)
+        await _search_nearby_by_text(update, region, chain, movie, time_str, date_str)
         return
 
     # Otherwise ask for GPS location
@@ -276,9 +294,13 @@ async def _do_nearby(
 
 
 async def _search_nearby_by_text(
-    update: Update, region: str, chain: str = ""
+    update: Update, region: str, chain: str = "",
+    movie: str = "", time_str: str = "", date_str: str = "",
 ) -> None:
-    """Search theaters by region text (e.g. 신림, 강남)."""
+    """Search theaters by region text (e.g. 신림, 강남).
+
+    If a movie is specified, also shows showtimes from now_playing DB.
+    """
     from cinepyle.theaters.models import TheaterDatabase
 
     db = TheaterDatabase.load()
@@ -303,7 +325,48 @@ async def _search_nearby_by_text(
             )
             return
 
-        # Sort by name for readability (no GPS = can't sort by distance)
+        # If movie specified, filter to theaters playing it and show showtimes
+        if movie:
+            target_date = _resolve_date(date_str)
+            play_date_str = target_date.strftime("%Y-%m-%d")
+            min_time = _parse_time_filter(time_str)
+
+            all_movie_names = db.get_now_playing_movies(play_date_str)
+            matched_titles = _match_movie_title(movie, all_movie_names) if all_movie_names else set()
+
+            if matched_titles:
+                lines = [f'📍 "{region}" 근처 — {movie} 상영 정보:\n']
+                found = False
+                for t in matches:
+                    theater_times = []
+                    for title in matched_titles:
+                        for np in db.find_theaters_playing(title, play_date_str):
+                            if np.chain == t.chain and np.theater_code == t.theater_code:
+                                if min_time and np.start_time.replace(":", "") < min_time:
+                                    continue
+                                theater_times.append(np)
+                    if theater_times:
+                        found = True
+                        lines.append(f"🏢 {t.name} ({t.chain})")
+                        # Group by screen
+                        theater_times.sort(key=lambda x: x.start_time)
+                        times_display = [f"{np.start_time} ({np.screen_name})" for np in theater_times]
+                        lines.append(f"  ⏰ {', '.join(times_display)}")
+
+                if found:
+                    text = "\n".join(lines)
+                    if len(text) > 4096:
+                        text = text[:4090] + "\n..."
+                    await update.message.reply_text(text)
+                    return
+
+            # Movie not found in nearby theaters — show theater list anyway
+            await update.message.reply_text(
+                f'"{region}" 근처 극장에서 "{movie}" 상영 정보를 찾을 수 없습니다.'
+            )
+            return
+
+        # No movie filter — just show theater list
         matches = matches[:10]
         lines = []
         for i, t in enumerate(matches, 1):
@@ -705,6 +768,10 @@ def _parse_time_filter(time_str: str) -> str:
         return ""
 
     t = time_str.strip()
+
+    # "지금", "이시간", "현재" → current time
+    if any(kw in t for kw in ("지금", "이시간", "현재")):
+        return datetime.now().strftime("%H%M")
 
     # "19:00" or "19시"
     m = re.search(r"(\d{1,2}):(\d{2})", t)
@@ -1629,7 +1696,8 @@ async def location_handler(
 
     Uses the local TheaterDatabase (no HTTP calls) so results are instant.
     If a ``nearby_chain_filter`` was stored by ``_do_nearby``, it filters
-    by that chain (e.g. only MegaBox results).
+    by that chain.  If ``nearby_movie_filter`` was stored, it also shows
+    showtimes for that movie at nearby theaters.
     """
     logger.info("location_handler called")
     location = update.message.location
@@ -1641,8 +1709,11 @@ async def location_handler(
     longitude = location.longitude
     logger.info("Location received: lat=%s, lon=%s", latitude, longitude)
 
-    # Retrieve chain filter set by _do_nearby (if any)
+    # Retrieve filters set by _do_nearby (if any)
     chain_filter = context.user_data.pop("nearby_chain_filter", "")
+    movie_filter = context.user_data.pop("nearby_movie_filter", "")
+    time_filter = context.user_data.pop("nearby_time_filter", "")
+    date_filter = context.user_data.pop("nearby_date_filter", "")
 
     remove_keyboard = ReplyKeyboardRemove()
     await update.message.reply_text(
@@ -1650,9 +1721,12 @@ async def location_handler(
         reply_markup=remove_keyboard,
     )
 
+    # Find more theaters when movie filter is specified (need broader search)
+    n_theaters = 10 if movie_filter else 5
+
     try:
         theaters = find_nearest_theaters(
-            latitude, longitude, n=5, chain_filter=chain_filter,
+            latitude, longitude, n=n_theaters, chain_filter=chain_filter,
         )
     except Exception:
         logger.exception("Failed to find nearby theaters")
@@ -1668,6 +1742,64 @@ async def location_handler(
         )
         return
 
+    # If movie filter is set, show showtimes at nearby theaters
+    if movie_filter:
+        from cinepyle.theaters.models import TheaterDatabase
+
+        target_date = _resolve_date(date_filter)
+        play_date_str = target_date.strftime("%Y-%m-%d")
+        min_time = _parse_time_filter(time_filter)
+
+        db = TheaterDatabase.load()
+        try:
+            all_movie_names = db.get_now_playing_movies(play_date_str)
+            matched_titles = (
+                _match_movie_title(movie_filter, all_movie_names)
+                if all_movie_names
+                else set()
+            )
+
+            if matched_titles:
+                lines = [f"📍 근처 영화관 — {movie_filter} 상영 정보:\n"]
+                found = False
+                for t_info in theaters:
+                    chain = t_info["Chain"]
+                    code = t_info["TheaterCode"]
+                    name = t_info["TheaterName"]
+                    theater_times = []
+                    for title in matched_titles:
+                        for np in db.find_theaters_playing(title, play_date_str):
+                            if np.chain == chain and np.theater_code == code:
+                                if min_time and np.start_time.replace(":", "") < min_time:
+                                    continue
+                                theater_times.append(np)
+                    if theater_times:
+                        found = True
+                        lines.append(f"🏢 {name} ({chain})")
+                        theater_times.sort(key=lambda x: x.start_time)
+                        times_display = [
+                            f"{np.start_time} ({np.screen_name})"
+                            for np in theater_times
+                        ]
+                        lines.append(f"  ⏰ {', '.join(times_display)}")
+
+                if found:
+                    text = "\n".join(lines)
+                    if len(text) > 4096:
+                        text = text[:4090] + "\n..."
+                    await update.message.reply_text(text)
+                    return
+        finally:
+            db.close()
+
+        # Movie not found at nearby theaters
+        await update.message.reply_text(
+            f'근처 영화관에서 "{movie_filter}" 상영 정보를 찾을 수 없습니다.\n'
+            "다른 영화나 시간대로 다시 검색해보세요!"
+        )
+        return
+
+    # No movie filter — just show nearby theater list
     lines = []
     for i, t in enumerate(theaters, 1):
         lines.append(f"{i}. {t['TheaterName']} ({t['Chain']})")

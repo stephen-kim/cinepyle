@@ -65,11 +65,13 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "nearby",
-        "description": "근처/주변/가까운 영화관 찾기. '근처 영화관', '가까운 극장', '영화관 어디', '주변 CGV', '이근처 영화관', '여기 근처' 등. 위치 확인은 봇이 따로 처리하므로 이 도구를 호출하면 됨. '이근처', '여기근처', '이 근처' 등 대명사는 region이 아님 (빈 문자열로).",
+        "description": "근처/주변/가까운 영화관 찾기. '근처 영화관', '가까운 극장', '영화관 어디', '주변 CGV', '이근처 영화관', '여기 근처' 등. 위치 확인은 봇이 따로 처리하므로 이 도구를 호출하면 됨. '이근처', '여기근처', '이 근처' 등 대명사는 region이 아님 (빈 문자열로). 중요: '근처에 OO 하는 곳', '가까운 곳에서 OO 보고 싶어' 등 근처+영화 조합도 nearby! (showtime이 아님!)",
         "parameters": {
             "reply": {"type": "string", "description": "위치 전송을 요청하는 안내 메시지"},
             "chain": {"type": "string", "description": "체인명 (CGV, 롯데시네마, 메가박스 등). 반드시 추출할 것. 없으면 빈 문자열"},
             "region": {"type": "string", "description": "구체적 지역명 (신림동, 강남, 분당 등). '이근처/여기/이쪽/지금 위치/현재 위치/내 위치' 같은 대명사는 빈 문자열로. 없으면 빈 문자열"},
+            "movie": {"type": "string", "description": "영화 제목. '근처에 인터스텔라 하는 곳' → '인터스텔라'. 없으면 빈 문자열"},
+            "time": {"type": "string", "description": "시간 (원문 그대로: '이시간에', '저녁에', '7시' 등). 없으면 빈 문자열"},
         },
         "required": ["reply"],
     },
@@ -182,6 +184,9 @@ TOOL_SYSTEM_PROMPT = """\
 - "근처 영화관 찾아줘" / "가까운 영화관" / "주변 영화관 어디" → nearby 도구
 - "이근처 영화관" / "여기 근처" / "이 근처 메가박스" → nearby 도구 (region은 빈 문자열!)
 - "신림동 근처 영화관" / "강남 근처 CGV" → nearby 도구 (region에 지역명 채우기)
+- "근처에 인터스텔라 하는 곳 있어?" → nearby 도구 (movie="인터스텔라") ← showtime이 아님!
+- "가까운 곳에서 왕과 사는 남자 보고 싶어" → nearby 도구 (movie="왕과 사는 남자")
+- "근처에 지금 볼 수 있는 영화" → nearby 도구 (movie 빈 문자열, time="지금")
 - "오늘 영화 뉴스" / "다이제스트" / "영화 소식" → digest 도구
 - "예매하고 싶어" / "티켓 끊고 싶어" → book 도구
 - "강남 영화 뭐해?" / "인터스텔라 상영관" → showtime 도구
@@ -194,6 +199,7 @@ TOOL_SYSTEM_PROMPT = """\
 - "오늘 할 거 없는데 영화나 보러갈까" + 영화 제목 → showtime (보러가겠다는 의사 = 상영시간 필요)
 
 ## 의도 판별 우선순위 (중요!)
+- "근처" / "가까운" / "주변" + 영화 제목 → nearby (showtime이 아님!). 위치 기반 검색이 필요하므로 nearby로.
 - "뭐해" / "뭐해?" / "뭐하니" 단독 (다른 단어 없이) → 절대로 showtime이 아님! → chat (인사/잡담)
 - "뭐해" + 지역/극장명 ("강남 뭐해", "CGV 뭐해") → showtime
 - 지역 + 시간/날짜가 언급되면 → showtime (영화 보려는 맥락)
@@ -581,6 +587,36 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
                 params={"region": "", "theater": user_message, "movie": "", "time": "", "date": ""},
             )
 
+    # Nearby (check BEFORE showtime — "근처" takes priority over showtime keywords)
+    has_nearby_kw = any(kw in msg for kw in _NEARBY_KEYWORDS)
+    if has_nearby_kw:
+        # Try to extract chain name from message
+        chain = ""
+        for c in ("CGV", "cgv", "씨지브이"):
+            if c in msg:
+                chain = "CGV"
+                break
+        for c in ("메가박스", "megabox"):
+            if c in msg.lower():
+                chain = "메가박스"
+                break
+        for c in ("롯데시네마", "롯데", "lotte"):
+            if c in msg.lower():
+                chain = "롯데시네마"
+                break
+        # Try to extract region — strip noise words and chain names
+        # Use the first matching nearby keyword as trigger
+        trigger_kw = next(kw for kw in _NEARBY_KEYWORDS if kw in msg)
+        region = _extract_region_for_nearby(text, trigger_kw, chain)
+        reply = "근처 영화관을 찾아드릴게요! 위치를 전송해주세요."
+        if region:
+            reply = f"{region} 근처 영화관을 찾아볼게요!"
+        return ClassificationResult(
+            intent=Intent.NEARBY,
+            reply=reply,
+            params={"chain": chain, "region": region},
+        )
+
     # Screen type (IMAX/4DX/돌비 etc.) → showtime with screen_type param
     has_screen_type = any(kw in msg for kw in _SCREEN_TYPE_KEYWORDS)
     if has_screen_type:
@@ -674,33 +710,6 @@ def classify_intent_fallback(user_message: str) -> ClassificationResult:
             return ClassificationResult(
                 intent=Intent.RANKING,
                 reply="박스오피스 순위를 가져올게요!",
-            )
-
-    for kw in _NEARBY_KEYWORDS:
-        if kw in msg:
-            # Try to extract chain name from message
-            chain = ""
-            for c in ("CGV", "cgv", "씨지브이"):
-                if c in msg:
-                    chain = "CGV"
-                    break
-            for c in ("메가박스", "megabox"):
-                if c in msg.lower():
-                    chain = "메가박스"
-                    break
-            for c in ("롯데시네마", "롯데", "lotte"):
-                if c in msg.lower():
-                    chain = "롯데시네마"
-                    break
-            # Try to extract region — strip noise words and chain names
-            region = _extract_region_for_nearby(text, kw, chain)
-            reply = "근처 영화관을 찾아드릴게요! 위치를 전송해주세요."
-            if region:
-                reply = f"{region} 근처 영화관을 찾아볼게요!"
-            return ClassificationResult(
-                intent=Intent.NEARBY,
-                reply=reply,
-                params={"chain": chain, "region": region},
             )
 
     for kw in _NEW_MOVIES_KEYWORDS:
