@@ -47,7 +47,7 @@ _UA = (
 # Number of days to scan forward for screen discovery.
 # Schedule-based APIs only return screens with active showtimes on a given day.
 # Scanning multiple days captures screens that are idle today but active later.
-_SCREEN_SCAN_DAYS = 7
+_SCREEN_SCAN_DAYS = 14
 
 
 def _scan_dates() -> list[str]:
