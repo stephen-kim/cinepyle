@@ -286,6 +286,18 @@ class TheaterDatabase:
             self._session.merge(entry)
         self._session.commit()
 
+    def replace_now_playing_for_dates(
+        self, entries: list[NowPlaying], dates: list[str],
+    ) -> None:
+        """Replace now_playing data for specific dates only (phased update)."""
+        self._session.execute(
+            delete(NowPlaying).where(NowPlaying.play_date.in_(dates))
+        )
+        self._session.flush()
+        for entry in entries:
+            self._session.merge(entry)
+        self._session.commit()
+
     # -- write API ---------------------------------------------------------
 
     def update_chain(self, chain: str, theaters: list[Theater]) -> None:

@@ -49,17 +49,31 @@ _UA = (
 # Scanning multiple days captures screens that are idle today but active later.
 _SCREEN_SCAN_DAYS = 14
 
+# Rate limit settings per chain (seconds between requests)
+_CGV_SLEEP = 0.3       # CGV: sleep between each schedule call
+_MEGABOX_SLEEP = 0.5   # MegaBox: sleep between each schedule call
+_LOTTE_SLEEP = 0.1     # Lotte: light sleep for safety
 
-def _scan_dates() -> list[str]:
-    """Return date strings (YYYYMMDD) for multi-day screen scan."""
+
+def _scan_dates(day_start: int = 0, day_end: int | None = None) -> list[str]:
+    """Return date strings (YYYYMMDD) for multi-day screen scan.
+
+    ``day_start`` / ``day_end`` allow splitting the scan into phases:
+      Phase 1 (this week): day_start=0, day_end=7
+      Phase 2 (next week): day_start=7, day_end=14
+    """
+    if day_end is None:
+        day_end = _SCREEN_SCAN_DAYS
     base = datetime.now()
-    return [(base + _timedelta(days=d)).strftime("%Y%m%d") for d in range(_SCREEN_SCAN_DAYS)]
+    return [(base + _timedelta(days=d)).strftime("%Y%m%d") for d in range(day_start, day_end)]
 
 
-def _scan_dates_dash() -> list[str]:
+def _scan_dates_dash(day_start: int = 0, day_end: int | None = None) -> list[str]:
     """Return date strings (YYYY-MM-DD) for multi-day screen scan."""
+    if day_end is None:
+        day_end = _SCREEN_SCAN_DAYS
     base = datetime.now()
-    return [(base + _timedelta(days=d)).strftime("%Y-%m-%d") for d in range(_SCREEN_SCAN_DAYS)]
+    return [(base + _timedelta(days=d)).strftime("%Y-%m-%d") for d in range(day_start, day_end)]
 
 
 # =========================================================================
@@ -137,7 +151,7 @@ def _cgv_ensure_session() -> requests.Session:
     return _cgv_session
 
 
-def _cgv_get(pathname: str, params: str = "", *, _retries: int = 3) -> dict | list | None:
+def _cgv_get(pathname: str, params: str = "", *, _retries: int = 5) -> dict | list | None:
     """Make an authenticated GET request to the CGV API.
 
     ``pathname`` is e.g. "/cnm/site/searchRegnSiteList" (no query string).
@@ -171,17 +185,26 @@ def _cgv_get(pathname: str, params: str = "", *, _retries: int = 3) -> dict | li
                 # Cloudflare block — reset session and retry
                 global _cgv_session
                 _cgv_session = None
+                wait = 5 * (2 ** attempt)
                 logger.warning(
-                    "CGV GET %s → 403 (attempt %d/%d, refreshing session)",
-                    pathname, attempt + 1, _retries,
+                    "CGV GET %s → 403 (attempt %d/%d, wait %ds)",
+                    pathname, attempt + 1, _retries, wait,
                 )
-                time.sleep(2 ** attempt)
+                time.sleep(wait)
+                continue
+            if resp.status_code == 429:
+                wait = 10 * (2 ** attempt)
+                logger.warning(
+                    "CGV GET %s → 429 rate limited (attempt %d/%d, wait %ds)",
+                    pathname, attempt + 1, _retries, wait,
+                )
+                time.sleep(wait)
                 continue
             logger.warning("CGV GET %s → %s", pathname, resp.status_code)
             return None
         except Exception:
             if attempt < _retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(5 * (2 ** attempt))
             else:
                 raise
     return None
@@ -206,7 +229,7 @@ def _classify_cgv_screen(grade_name: str, screen_name: str) -> str:
     return SCREEN_TYPE_NORMAL
 
 
-def sync_cgv() -> list[Theater]:
+def sync_cgv(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
     """Fetch CGV theaters with individual hall names from schedule API."""
     # Build lat/lon lookup from static data (API doesn't return coordinates)
     static_lookup: dict[str, dict] = {
@@ -245,7 +268,7 @@ def sync_cgv() -> list[Theater]:
 
     # Step 2: For each theater, get individual halls from schedule API
     # Scan multiple days to discover screens that are idle today
-    scan_dates = _scan_dates()
+    scan_dates = _scan_dates(day_start, day_end)
     theaters: list[Theater] = []
 
     for site_no, info in theater_info.items():
@@ -294,7 +317,7 @@ def sync_cgv() -> list[Theater]:
                     ))
             except Exception:
                 logger.warning("CGV schedule fetch failed for %s on %s", site_no, scan_date)
-            time.sleep(1)  # Rate limit: 1s between requests
+            time.sleep(_CGV_SLEEP)
 
         # Fallback: if schedule returned no screens, use rcmGradList
         if not screens:
@@ -357,7 +380,7 @@ def _lotte_api(url: str, **kwargs: str) -> dict:
         return json.loads(fin.read().decode("utf8"))
 
 
-def sync_lotte() -> list[Theater]:
+def sync_lotte(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
     """Fetch Lotte Cinema theaters with individual halls."""
     # Step 1: Get all cinemas
     data = _lotte_api(LOTTE_CINEMA_URL, MethodName="GetCinemaItems")
@@ -365,7 +388,7 @@ def sync_lotte() -> list[Theater]:
     items = [x for x in items if x.get("DivisionCode") != 2]
 
     theaters: list[Theater] = []
-    scan_dates = _scan_dates_dash()
+    scan_dates = _scan_dates_dash(day_start, day_end)
 
     for cinema in items:
         cinema_id = str(cinema.get("CinemaID", ""))
@@ -431,6 +454,7 @@ def sync_lotte() -> list[Theater]:
                     ))
             except Exception:
                 logger.debug("Lotte schedule failed for %s on %s", cinema_id, scan_date)
+            time.sleep(_LOTTE_SLEEP)
 
         theaters.append(Theater(
             chain="lotte",
@@ -470,7 +494,7 @@ def _megabox_all_branches(session: requests.Session) -> dict[str, str]:
     return {code: unescape(name.strip()) for code, name in pairs}
 
 
-def sync_megabox() -> list[Theater]:
+def sync_megabox(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
     """Fetch all MegaBox theaters with individual halls.
 
     Step 1: Scrape the full theater list from the HTML page (117+ theaters).
@@ -479,7 +503,7 @@ def sync_megabox() -> list[Theater]:
     """
     from html import unescape as _unescape
 
-    scan_dates = _scan_dates()
+    scan_dates = _scan_dates(day_start, day_end)
     session = requests.Session()
     session.headers.update({
         "User-Agent": _UA,
@@ -502,47 +526,67 @@ def sync_megabox() -> list[Theater]:
         screens: list[Screen] = []
 
         for scan_date in scan_dates:
-            try:
-                resp = session.post(
-                    MEGABOX_URL,
-                    data={
-                        "masterType": "brch",
-                        "brchNo": brch_no,
-                        "brchNo1": brch_no,
-                        "playDe": scan_date,
-                        "firstAt": "Y",
-                    },
-                    timeout=10,
-                )
-                mega = resp.json().get("megaMap", {})
-
-                # Branch info (only grab once)
-                if not address:
-                    info = mega.get("brchInfo", {})
-                    address = _unescape(info.get("roadNmAddr", "") or "")
-                    lat = float(info.get("brchLat", 0) or 0)
-                    lon = float(info.get("brchLon", 0) or 0)
-
-                # Individual halls from schedule
-                for item in mega.get("movieFormList", []):
-                    theab_no = str(item.get("theabNo", ""))
-                    if theab_no in seen:
-                        continue
-                    seen.add(theab_no)
-
-                    kind_cd = item.get("theabKindCd", "NOR")
-                    screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
-                        kind_cd, SCREEN_TYPE_NORMAL,
+            for attempt in range(5):
+                try:
+                    resp = session.post(
+                        MEGABOX_URL,
+                        data={
+                            "masterType": "brch",
+                            "brchNo": brch_no,
+                            "brchNo1": brch_no,
+                            "playDe": scan_date,
+                            "firstAt": "Y",
+                        },
+                        timeout=10,
                     )
-                    screens.append(Screen(
-                        screen_id=theab_no,
-                        name=_unescape(item.get("theabExpoNm", "")),
-                        screen_type=screen_type,
-                        seat_count=int(item.get("totSeatCnt", 0) or 0),
-                        is_special=screen_type in SPECIAL_TYPES,
-                    ))
-            except Exception:
-                logger.debug("MegaBox fetch failed for %s on %s", brch_no, scan_date)
+                    # Rate limit: plain text "Workload is so high"
+                    ct = resp.headers.get("content-type", "")
+                    if "json" not in ct or resp.text.startswith("Workload"):
+                        wait = 30 * (2 ** attempt)
+                        logger.warning(
+                            "MegaBox rate limited for %s (attempt %d/5, wait %ds)",
+                            brch_no, attempt + 1, wait,
+                        )
+                        time.sleep(wait)
+                        continue
+
+                    mega = resp.json().get("megaMap", {})
+
+                    # Branch info (only grab once)
+                    if not address:
+                        info = mega.get("brchInfo", {})
+                        address = _unescape(info.get("roadNmAddr", "") or "")
+                        lat = float(info.get("brchLat", 0) or 0)
+                        lon = float(info.get("brchLon", 0) or 0)
+
+                    # Individual halls from schedule
+                    for item in mega.get("movieFormList", []):
+                        theab_no = str(item.get("theabNo", ""))
+                        if theab_no in seen:
+                            continue
+                        seen.add(theab_no)
+
+                        kind_cd = item.get("theabKindCd", "NOR")
+                        screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
+                            kind_cd, SCREEN_TYPE_NORMAL,
+                        )
+                        screens.append(Screen(
+                            screen_id=theab_no,
+                            name=_unescape(item.get("theabExpoNm", "")),
+                            screen_type=screen_type,
+                            seat_count=int(item.get("totSeatCnt", 0) or 0),
+                            is_special=screen_type in SPECIAL_TYPES,
+                        ))
+                    break  # success, move to next date
+                except Exception:
+                    if attempt < 4:
+                        time.sleep(10 * (2 ** attempt))
+                    else:
+                        logger.debug(
+                            "MegaBox fetch failed for %s on %s after retries",
+                            brch_no, scan_date,
+                        )
+            time.sleep(_MEGABOX_SLEEP)
 
         theaters.append(Theater(
             chain="megabox",
@@ -608,11 +652,15 @@ def sync_indie_cineq() -> list[Theater]:
 _NOW_PLAYING_DAYS = 14  # Fetch this many days of schedule data
 
 
-def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
+def _collect_now_playing(
+    db: TheaterDatabase,
+    day_start: int = 0,
+    day_end: int | None = None,
+) -> tuple[list[NowPlaying], list[str]]:
     """Fetch multi-day schedules for all theaters and collect showtimes.
 
-    Fetches today + next ``_NOW_PLAYING_DAYS - 1`` days in parallel.
-    Returns a list of NowPlaying entries with ``play_date`` set.
+    Returns ``(entries, date_strings)`` where *date_strings* lists the
+    dates that were actually fetched (for partial DB replacement).
     """
     from datetime import date as _date
 
@@ -627,10 +675,14 @@ def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
     ]
 
     if not theaters_input:
-        return []
+        return [], []
+
+    if day_end is None:
+        day_end = _NOW_PLAYING_DAYS
 
     today = _date.today()
-    dates = [today + _timedelta(days=d) for d in range(_NOW_PLAYING_DAYS)]
+    dates = [today + _timedelta(days=d) for d in range(day_start, day_end)]
+    date_strings = [d.strftime("%Y-%m-%d") for d in dates]
 
     synced_at = datetime.now(timezone.utc).isoformat()
     seen: set[tuple[str, str, str, str, str, str]] = set()
@@ -665,26 +717,31 @@ def _collect_now_playing(db: TheaterDatabase) -> list[NowPlaying]:
                     synced_at=synced_at,
                 ))
 
-    return entries
+    return entries, date_strings
 
 
-def sync_all_theaters() -> TheaterDatabase:
+def sync_all_theaters(
+    day_start: int = 0,
+    day_end: int | None = None,
+) -> TheaterDatabase:
     """Sync all chains and return updated database.
 
     Each chain fails independently. Existing data for a chain is
     only replaced if the new fetch succeeds (partial update safe).
+
+    Use ``day_start`` / ``day_end`` to split into phases:
+      Phase 1: sync_all_theaters(0, 7)   — this week
+      Phase 2: sync_all_theaters(7, 14)  — next week
     """
     db = TheaterDatabase.load()
 
-    chain_syncs: list[tuple[str, callable]] = [
+    for chain, sync_fn in [
         ("cgv", sync_cgv),
         ("lotte", sync_lotte),
         ("megabox", sync_megabox),
-    ]
-
-    for chain, sync_fn in chain_syncs:
+    ]:
         try:
-            theaters = sync_fn()
+            theaters = sync_fn(day_start, day_end)
             if theaters:
                 db.update_chain(chain, theaters)
                 logger.info("Updated %s: %d theaters", chain, len(theaters))
@@ -707,8 +764,13 @@ def sync_all_theaters() -> TheaterDatabase:
 
     # Collect now_playing data (movies currently screening at each theater)
     try:
-        now_playing = _collect_now_playing(db)
-        db.replace_now_playing(now_playing)
+        now_playing, np_dates = _collect_now_playing(db, day_start, day_end)
+        if day_start == 0 and (day_end is None or day_end >= _NOW_PLAYING_DAYS):
+            # Full sync — replace everything
+            db.replace_now_playing(now_playing)
+        else:
+            # Phased sync — only replace fetched dates
+            db.replace_now_playing_for_dates(now_playing, np_dates)
         logger.info("Now playing: %d movie-theater pairs", len(now_playing))
     except Exception:
         logger.exception("Failed to collect now_playing data")

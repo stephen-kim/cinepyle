@@ -6,10 +6,18 @@ the result to data/seed/theaters.db.  This replaces the in-container
 periodic sync — theater data is now updated centrally via CI and shipped
 inside the Docker image.
 
+Supports phased sync to avoid rate limits:
+  --phase 1  →  scan days 0–6  (this week)
+  --phase 2  →  scan days 7–13 (next week)
+  (no flag)  →  scan days 0–13 (full, legacy)
+
 Usage:
     uv run python scripts/sync_theaters.py
+    uv run python scripts/sync_theaters.py --phase 1
+    uv run python scripts/sync_theaters.py --phase 2
 """
 
+import argparse
 import logging
 import shutil
 import sys
@@ -33,10 +41,31 @@ SEED_PATH = Path("seed/theaters.db")
 # If a chain falls below this threshold, the sync is considered failed.
 _MIN_SCREEN_RATE = 0.9  # 90%
 
+# Chains that have no screen API — exempt from health check
+_EXEMPT_CHAINS = {"indie", "cineq"}
+
+_PHASE_RANGES = {
+    1: (0, 7),
+    2: (7, 14),
+}
+
 
 def main() -> None:
-    logger.info("Starting theater sync...")
-    db = sync_all_theaters()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--phase", type=int, choices=[1, 2], default=None,
+        help="Sync phase: 1 = days 0-6, 2 = days 7-13",
+    )
+    args = parser.parse_args()
+
+    if args.phase:
+        day_start, day_end = _PHASE_RANGES[args.phase]
+        logger.info("Starting theater sync phase %d (days %d–%d)...", args.phase, day_start, day_end - 1)
+    else:
+        day_start, day_end = 0, None
+        logger.info("Starting full theater sync (days 0–13)...")
+
+    db = sync_all_theaters(day_start, day_end)
 
     total_theaters = len(db.theaters)
     total_screens = sum(len(t.screens) for t in db.theaters)
@@ -71,12 +100,14 @@ def main() -> None:
         total = stats["total"]
         with_screens = stats["with_screens"]
         rate = with_screens / total if total else 0
-        status = "OK" if rate >= _MIN_SCREEN_RATE else "FAIL"
+        exempt = chain in _EXEMPT_CHAINS
+        status = "OK" if rate >= _MIN_SCREEN_RATE or exempt else "FAIL"
         logger.info(
-            "  %s: %d/%d theaters with screens (%.0f%%) — %s",
+            "  %s: %d/%d theaters with screens (%.0f%%) — %s%s",
             chain, with_screens, total, rate * 100, status,
+            " (exempt)" if exempt else "",
         )
-        if total > 0 and rate < _MIN_SCREEN_RATE:
+        if total > 0 and rate < _MIN_SCREEN_RATE and not exempt:
             failed_chains.append(chain)
 
     if failed_chains:

@@ -169,55 +169,73 @@ def fetch_megabox_schedule(
         date=date_str,
     )
 
-    try:
-        resp = requests.post(
-            MEGABOX_SCHEDULE_URL,
-            data={
-                "masterType": "brch",
-                "brchNo": theater_code,
-                "brchNo1": theater_code,
-                "firstAt": "Y",
-                "playDe": play_de,
-            },
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://www.megabox.co.kr/",
-            },
-            timeout=10,
-        )
-        data = resp.json()
+    import time
 
-        for entry in data.get("megaMap", {}).get("movieFormList", []):
-            movie_name = entry.get("movieNm", "")
-            if not movie_name:
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                MEGABOX_SCHEDULE_URL,
+                data={
+                    "masterType": "brch",
+                    "brchNo": theater_code,
+                    "brchNo1": theater_code,
+                    "firstAt": "Y",
+                    "playDe": play_de,
+                },
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://www.megabox.co.kr/",
+                },
+                timeout=10,
+            )
+            # Rate limit: plain text "Workload is so high"
+            ct = resp.headers.get("content-type", "")
+            if "json" not in ct or resp.text.startswith("Workload"):
+                wait = 30 * (2 ** attempt)
+                logger.warning(
+                    "MegaBox schedule rate limited for %s (attempt %d/3, wait %ds)",
+                    theater_code, attempt + 1, wait,
+                )
+                time.sleep(wait)
                 continue
 
-            screen_name = entry.get("theabExpoNm", "")
-            screen_id = str(entry.get("theabNo", ""))
-            kind_cd = entry.get("theabKindCd", "NOR")
-            screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
-                kind_cd, SCREEN_TYPE_NORMAL
-            )
+            data = resp.json()
 
-            start_time = _normalize_time(entry.get("playStartTime", ""))
-            remaining = int(entry.get("restSeatCnt", 0) or 0)
+            for entry in data.get("megaMap", {}).get("movieFormList", []):
+                movie_name = entry.get("movieNm", "")
+                if not movie_name:
+                    continue
 
-            schedule_id = str(entry.get("playSchdlNo", ""))
-
-            result.screenings.append(
-                Screening(
-                    movie_name=movie_name,
-                    start_time=start_time,
-                    remaining_seats=remaining,
-                    screen_name=screen_name,
-                    screen_type=screen_type,
-                    screen_id=screen_id,
-                    schedule_id=schedule_id,
+                screen_name = entry.get("theabExpoNm", "")
+                screen_id = str(entry.get("theabNo", ""))
+                kind_cd = entry.get("theabKindCd", "NOR")
+                screen_type = MEGABOX_SCREEN_TYPE_MAP.get(
+                    kind_cd, SCREEN_TYPE_NORMAL
                 )
-            )
-    except Exception:
-        logger.debug("MegaBox schedule failed for %s", theater_code)
-        result.error = "상영 정보를 가져올 수 없습니다"
+
+                start_time = _normalize_time(entry.get("playStartTime", ""))
+                remaining = int(entry.get("restSeatCnt", 0) or 0)
+
+                schedule_id = str(entry.get("playSchdlNo", ""))
+
+                result.screenings.append(
+                    Screening(
+                        movie_name=movie_name,
+                        start_time=start_time,
+                        remaining_seats=remaining,
+                        screen_name=screen_name,
+                        screen_type=screen_type,
+                        screen_id=screen_id,
+                        schedule_id=schedule_id,
+                    )
+                )
+            break  # success
+        except Exception:
+            if attempt < 2:
+                time.sleep(5 * (2 ** attempt))
+            else:
+                logger.debug("MegaBox schedule failed for %s", theater_code)
+                result.error = "상영 정보를 가져올 수 없습니다"
 
     return result
 
@@ -326,41 +344,66 @@ def fetch_schedules_for_theaters(
     theaters: list[tuple],  # [(chain, theater_code, name[, meta]), ...]
     target_date: date | None = None,
 ) -> list[TheaterSchedule]:
-    """Fetch schedules for multiple theaters across chains (parallel).
+    """Fetch schedules for multiple theaters across chains.
+
+    Chains run **in parallel**; within each chain requests are
+    **sequential** with a rate-limiting sleep to avoid API blocks.
 
     Each tuple is ``(chain, theater_code, name)`` or optionally
     ``(chain, theater_code, name, meta_dict)`` where *meta_dict*
     carries chain-specific metadata (e.g. Lotte composite ID parts).
     """
+    import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _fetch_one(args):
-        chain, theater_code, name = args[0], args[1], args[2]
-        meta = args[3] if len(args) > 3 else None
+    # Per-chain sleep between requests (seconds)
+    _CHAIN_SLEEP: dict[str, float] = {
+        "cgv": 0.3,
+        "megabox": 0.5,
+        "lotte": 0.1,
+    }
+
+    # Group theaters by chain
+    by_chain: dict[str, list[tuple]] = {}
+    for t in theaters:
+        by_chain.setdefault(t[0], []).append(t)
+
+    if not by_chain:
+        return []
+
+    def _fetch_chain(chain: str, chain_theaters: list[tuple]) -> list[TheaterSchedule]:
+        """Fetch all theaters for one chain sequentially."""
         fetcher = _CHAIN_FETCHERS.get(chain)
         if not fetcher:
-            return None
-        try:
-            if chain == "lotte" and meta:
-                return fetcher(theater_code, name, target_date, meta=meta)
-            return fetcher(theater_code, name, target_date)
-        except Exception:
-            logger.debug("Schedule fetch failed for %s:%s", chain, theater_code)
-            return None
-
-    results = []
-    max_workers = min(len(theaters), 20)
-    if max_workers == 0:
+            return []
+        sleep_time = _CHAIN_SLEEP.get(chain, 0.1)
+        results: list[TheaterSchedule] = []
+        for args in chain_theaters:
+            theater_code, name = args[1], args[2]
+            meta = args[3] if len(args) > 3 else None
+            try:
+                if chain == "lotte" and meta:
+                    result = fetcher(theater_code, name, target_date, meta=meta)
+                else:
+                    result = fetcher(theater_code, name, target_date)
+                if result is not None:
+                    results.append(result)
+            except Exception:
+                logger.debug("Schedule fetch failed for %s:%s", chain, theater_code)
+            time.sleep(sleep_time)
         return results
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_fetch_one, t): t for t in theaters}
+    # Run chains in parallel, sequential within each chain
+    all_results: list[TheaterSchedule] = []
+    with ThreadPoolExecutor(max_workers=len(by_chain)) as pool:
+        futures = {
+            pool.submit(_fetch_chain, chain, ct): chain
+            for chain, ct in by_chain.items()
+        }
         for future in as_completed(futures):
-            result = future.result()
-            if result is not None:
-                results.append(result)
+            all_results.extend(future.result())
 
-    return results
+    return all_results
 
 
 # ---------------------------------------------------------------------------
