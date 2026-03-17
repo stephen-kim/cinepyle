@@ -60,25 +60,17 @@ def _make_key(chain: str, theater_code: str, screen_id: str, movie: str) -> str:
 
 
 def _fetch_cgv_schedule(theater_code: str) -> dict[str, list[str]]:
-    """Fetch CGV schedule for a theater → {scnsNo: [movie, ...]}."""
-    from cinepyle.theaters.sync import _cgv_get
+    """Fetch CGV schedule for a theater → {scnsNo: [movie, ...]}.
+
+    Tries the unauthenticated API first, then falls back to the
+    HMAC-signed endpoint.
+    """
+    from cinepyle.theaters.sync import _cgv_get, _cgv_new_api
 
     today = datetime.now().strftime("%Y%m%d")
     result: dict[str, list[str]] = {}
-    try:
-        data = _cgv_get(
-            "/cnm/atkt/searchMovScnInfo",
-            f"coCd=A420&siteNo={theater_code}&scnYmd={today}&rtctlScopCd=01",
-        )
-        if not data:
-            return result
-        # API wraps in {"statusCode": 0, "data": [...]}
-        raw = data.get("data", data)
-        items = (
-            raw
-            if isinstance(raw, list)
-            else raw.get("list", raw.get("movieScnList", []))
-        )
+
+    def _parse_items(items: list[dict]) -> None:
         for item in items:
             scns_no = str(item.get("scnsNo", ""))
             movie = item.get("movNm", "")
@@ -86,6 +78,32 @@ def _fetch_cgv_schedule(theater_code: str) -> dict[str, list[str]]:
                 result.setdefault(scns_no, [])
                 if movie not in result[scns_no]:
                     result[scns_no].append(movie)
+
+    # 1) Try new unauthenticated API
+    try:
+        items = _cgv_new_api(theater_code, today)
+        if items:
+            _parse_items(items)
+            if result:
+                return result
+    except Exception:
+        pass
+
+    # 2) Fall back to HMAC-signed API
+    try:
+        data = _cgv_get(
+            "/cnm/atkt/searchMovScnInfo",
+            f"coCd=A420&siteNo={theater_code}&scnYmd={today}&rtctlScopCd=01",
+        )
+        if not data:
+            return result
+        raw = data.get("data", data)
+        items = (
+            raw
+            if isinstance(raw, list)
+            else raw.get("list", raw.get("movieScnList", []))
+        )
+        _parse_items(items)
     except Exception:
         logger.debug("CGV schedule fetch failed for %s", theater_code)
     return result

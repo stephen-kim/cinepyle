@@ -82,7 +82,11 @@ def _scan_dates_dash(day_start: int = 0, day_end: int | None = None) -> list[str
 
 CGV_API_BASE = "https://api.cgv.co.kr"
 CGV_WEB_BASE = "https://www.cgv.co.kr"
+CGV_SCHEDULE_API = "https://cgv.co.kr/api/schedules"
 CGV_HMAC_SECRET = "ydqXY0ocnFLmJGHr_zNzFcpjwAsXq_8JcBNURAkRscg"
+
+# Circuit breaker: skip remaining screen scans after this many consecutive failures
+_CGV_CIRCUIT_BREAKER = 3
 
 CGV_REGION_CODES = [
     "01",   # 서울
@@ -149,6 +153,47 @@ def _cgv_ensure_session() -> requests.Session:
         _cgv_session.headers.update({"User-Agent": _UA})
         _cgv_session.get(CGV_WEB_BASE, timeout=10)  # get CF cookies
     return _cgv_session
+
+
+def _cgv_new_api(theater_code: str, date: str) -> list[dict] | None:
+    """Try the unauthenticated CGV schedule API (cgv.co.kr/api/schedules).
+
+    Returns raw items in searchMovScnInfo-compatible format, or None if
+    the endpoint is unavailable (e.g. Cloudflare challenge).
+    """
+    try:
+        resp = requests.get(
+            CGV_SCHEDULE_API,
+            params={"theaterCode": theater_code, "date": date},
+            headers={
+                "User-Agent": _UA,
+                "Accept": "application/json",
+                "Referer": "https://cgv.co.kr/",
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        items: list[dict] = []
+        for movie in data.get("movies", data.get("schedules", [])):
+            movie_name = movie.get("movieName", movie.get("title", ""))
+            for hall in movie.get("halls", movie.get("screenings", [])):
+                hall_name = str(hall.get("hallName", hall.get("screenName", "")))
+                hall_no = str(hall.get("hallNo", hall.get("screenNo", "")))
+                seat_count = int(hall.get("totalSeats", hall.get("seatCount", 0)) or 0)
+                items.append({
+                    "scnsNo": hall_no,
+                    "expoScnsNm": hall_name,
+                    "scnsNm": hall_name,
+                    "tcscnsGradNm": hall_name,
+                    "stcnt": seat_count,
+                    "movNm": movie_name,
+                })
+        return items or None
+    except Exception:
+        return None
 
 
 def _cgv_get(pathname: str, params: str = "", *, _retries: int = 5) -> dict | list | None:
@@ -229,6 +274,87 @@ def _classify_cgv_screen(grade_name: str, screen_name: str) -> str:
     return SCREEN_TYPE_NORMAL
 
 
+def _cgv_fetch_screens(
+    site_no: str,
+    scan_dates: list[str],
+    *,
+    circuit_open: bool,
+) -> tuple[list[Screen], int]:
+    """Fetch individual screens for one CGV theater via schedule APIs.
+
+    Tries the new unauthenticated API first, then falls back to the
+    HMAC-signed API.  Returns ``(screens, consecutive_fail_count)``.
+    A non-zero fail count indicates the HMAC API returned failures
+    (used by the caller's circuit breaker).
+    """
+    seen: set[str] = set()
+    screens: list[Screen] = []
+    consecutive_fails = 0
+
+    if circuit_open:
+        return screens, 0
+
+    for scan_date in scan_dates:
+        items: list[dict] | None = None
+
+        # 1) Try new unauthenticated API
+        items_new = _cgv_new_api(site_no, scan_date)
+        if items_new:
+            items = items_new
+            consecutive_fails = 0
+        else:
+            # 2) Fall back to HMAC API (fewer retries to fail fast)
+            sched_data = _cgv_get(
+                "/cnm/atkt/searchMovScnInfo",
+                f"coCd=A420&siteNo={site_no}&scnYmd={scan_date}&rtctlScopCd=01",
+                _retries=2,
+            )
+            if sched_data:
+                raw = sched_data.get("data", sched_data)
+                items = (
+                    raw
+                    if isinstance(raw, list)
+                    else raw.get("list", raw.get("movieScnList", []))
+                )
+                consecutive_fails = 0
+            else:
+                consecutive_fails += 1
+                if consecutive_fails >= _CGV_CIRCUIT_BREAKER:
+                    logger.warning(
+                        "CGV circuit breaker: %d consecutive failures at %s, "
+                        "skipping remaining screen scan",
+                        consecutive_fails, site_no,
+                    )
+                    break
+                continue
+
+        if not items:
+            continue
+
+        for item in items:
+            scns_no = str(item.get("scnsNo", ""))
+            scns_nm = item.get("expoScnsNm", "") or item.get("scnsNm", "")
+            grade_nm = item.get("tcscnsGradNm", "")
+            seat_count = int(item.get("stcnt", 0) or 0)
+
+            screen_key = f"{scns_no}_{scns_nm}"
+            if screen_key in seen:
+                continue
+            seen.add(screen_key)
+
+            screen_type = _classify_cgv_screen(grade_nm, scns_nm)
+            screens.append(Screen(
+                screen_id=scns_no,
+                name=scns_nm,
+                screen_type=screen_type,
+                seat_count=seat_count,
+                is_special=screen_type in SPECIAL_TYPES,
+            ))
+        time.sleep(_CGV_SLEEP)
+
+    return screens, consecutive_fails
+
+
 def sync_cgv(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
     """Fetch CGV theaters with individual hall names from schedule API."""
     # Build lat/lon lookup from static data (API doesn't return coordinates)
@@ -267,61 +393,37 @@ def sync_cgv(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
             logger.exception("CGV region %s sync failed", region_code)
 
     # Step 2: For each theater, get individual halls from schedule API
-    # Scan multiple days to discover screens that are idle today
+    # Uses circuit breaker to skip remaining theaters if APIs are blocked.
     scan_dates = _scan_dates(day_start, day_end)
     theaters: list[Theater] = []
+    circuit_open = False
+    total_consecutive_fails = 0
 
     for site_no, info in theater_info.items():
         static = static_lookup.get(site_no, {})
         lat = float(static.get("Latitude", 0))
         lon = float(static.get("Longitude", 0))
 
-        seen_screens: set[str] = set()
-        screens: list[Screen] = []
+        screens, fails = _cgv_fetch_screens(
+            site_no, scan_dates, circuit_open=circuit_open,
+        )
 
-        # Try to get individual halls from schedule (multi-day scan)
-        for scan_date in scan_dates:
-            try:
-                sched_data = _cgv_get(
-                    "/cnm/atkt/searchMovScnInfo",
-                    f"coCd=A420&siteNo={site_no}&scnYmd={scan_date}&rtctlScopCd=01",
+        # Track consecutive failures across theaters for circuit breaker
+        if fails >= _CGV_CIRCUIT_BREAKER:
+            total_consecutive_fails += fails
+            if not circuit_open:
+                circuit_open = True
+                logger.warning(
+                    "CGV screen scan circuit breaker tripped — "
+                    "falling back to rcmGradList for remaining theaters"
                 )
-                if not sched_data:
-                    continue
-                # API wraps in {"statusCode": 0, "data": [...]}
-                raw = sched_data.get("data", sched_data)
-                items = (
-                    raw
-                    if isinstance(raw, list)
-                    else raw.get("list", raw.get("movieScnList", []))
-                )
-
-                for item in items:
-                    scns_no = str(item.get("scnsNo", ""))
-                    scns_nm = item.get("expoScnsNm", "") or item.get("scnsNm", "")
-                    grade_nm = item.get("tcscnsGradNm", "")
-                    seat_count = int(item.get("stcnt", 0) or 0)
-
-                    screen_key = f"{scns_no}_{scns_nm}"
-                    if screen_key in seen_screens:
-                        continue
-                    seen_screens.add(screen_key)
-
-                    screen_type = _classify_cgv_screen(grade_nm, scns_nm)
-                    screens.append(Screen(
-                        screen_id=scns_no,
-                        name=scns_nm,
-                        screen_type=screen_type,
-                        seat_count=seat_count,
-                        is_special=screen_type in SPECIAL_TYPES,
-                    ))
-            except Exception:
-                logger.warning("CGV schedule fetch failed for %s on %s", site_no, scan_date)
-            time.sleep(_CGV_SLEEP)
+        else:
+            total_consecutive_fails = 0
 
         # Fallback: if schedule returned no screens, use rcmGradList
         if not screens:
-            for grad in info.get("grad_list", []):
+            grad_list = info.get("grad_list", [])
+            for grad in grad_list:
                 grad_cd = str(grad.get("gradCd", ""))
                 grad_nm = grad.get("gradNm", "")
                 grad_count = int(grad.get("gradCount", 1))
@@ -335,6 +437,16 @@ def sync_cgv(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
                     screen_type=screen_type,
                     seat_count=0,
                     is_special=screen_type in SPECIAL_TYPES,
+                ))
+            # If rcmGradList is also empty, add a placeholder so the
+            # theater still counts as "having screens" for the health check
+            if not screens:
+                screens.append(Screen(
+                    screen_id="type_01",
+                    name="일반",
+                    screen_type=SCREEN_TYPE_NORMAL,
+                    seat_count=0,
+                    is_special=False,
                 ))
 
         site_nm = info["name"]
@@ -352,6 +464,11 @@ def sync_cgv(day_start: int = 0, day_end: int | None = None) -> list[Theater]:
 
     no_screens = sum(1 for t in theaters if not t.screens)
     logger.info("CGV sync: %d theaters (%d without screens)", len(theaters), no_screens)
+    if circuit_open:
+        logger.info(
+            "CGV sync used rcmGradList fallback due to API blocks — "
+            "screen IDs/seat counts may be incomplete"
+        )
     if no_screens:
         logger.warning(
             "CGV theaters without screens: %s",

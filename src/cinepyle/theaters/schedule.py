@@ -245,6 +245,59 @@ def fetch_megabox_schedule(
 # ---------------------------------------------------------------------------
 
 
+def _fetch_cgv_via_new_api(
+    theater_code: str,
+    scn_ymd: str,
+    result: TheaterSchedule,
+) -> bool:
+    """Try fetching CGV schedule via the unauthenticated API.
+
+    Populates *result.screenings* and returns True on success.
+    """
+    from cinepyle.theaters.sync import _cgv_new_api
+
+    items = _cgv_new_api(theater_code, scn_ymd)
+    if not items:
+        return False
+
+    from cinepyle.theaters.models import CGV_GRADE_NAME_MAP
+
+    for item in items:
+        movie_name = item.get("movNm", "")
+        scns_no = str(item.get("scnsNo", ""))
+        screen_name = item.get("expoScnsNm", "") or item.get("scnsNm", "")
+        grade_name = item.get("tcscnsGradNm", "")
+
+        if not movie_name or not scns_no:
+            continue
+
+        screen_type = SCREEN_TYPE_NORMAL
+        for keyword, stype in CGV_GRADE_NAME_MAP.items():
+            if keyword in grade_name.upper() or keyword in screen_name.upper():
+                screen_type = stype
+                break
+
+        start_time = _normalize_time(item.get("scnsrtTm", ""))
+        remaining = int(item.get("frSeatCnt", 0) or 0)
+        if not remaining:
+            remaining = int(item.get("stcnt", 0) or 0)
+
+        schedule_id = str(item.get("scnSseq", "") or item.get("sesnNo", ""))
+
+        result.screenings.append(
+            Screening(
+                movie_name=movie_name,
+                start_time=start_time,
+                remaining_seats=remaining,
+                screen_name=screen_name,
+                screen_type=screen_type,
+                screen_id=scns_no,
+                schedule_id=schedule_id,
+            )
+        )
+    return bool(result.screenings)
+
+
 def fetch_cgv_schedule(
     theater_code: str,
     theater_name: str = "",
@@ -252,8 +305,8 @@ def fetch_cgv_schedule(
 ) -> TheaterSchedule:
     """Fetch CGV schedule with start times.
 
-    Uses rtctlScopCd=08 to get full showtime data including start/end
-    times and remaining seats.
+    Tries the unauthenticated cgv.co.kr API first, then falls back to
+    the HMAC-signed api.cgv.co.kr endpoint (rtctlScopCd=08).
     """
     from cinepyle.theaters.models import CGV_GRADE_NAME_MAP
     from cinepyle.theaters.sync import _cgv_get
@@ -269,6 +322,11 @@ def fetch_cgv_schedule(
         date=date_str,
     )
 
+    # 1) Try new unauthenticated API
+    if _fetch_cgv_via_new_api(theater_code, scn_ymd, result):
+        return result
+
+    # 2) Fall back to HMAC-signed API
     try:
         data = _cgv_get(
             "/cnm/atkt/searchMovScnInfo",
