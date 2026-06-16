@@ -18,9 +18,4 @@ COPY asset/ asset/
 # Install the project
 RUN uv sync --no-dev
 
-# Install Playwright Chromium and its system dependencies
-RUN uv run playwright install --with-deps chromium
-
-EXPOSE ${DASHBOARD_PORT:-3847}
-
 CMD ["uv", "run", "cinepyle"]
